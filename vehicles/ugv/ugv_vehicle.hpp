@@ -30,6 +30,9 @@ public:
     static constexpr float HEADING_KD = 0.08f;
 
 protected:
+    /** For vehicles that reuse the rover controller (the boat). */
+    UGVVehicle(hal::HAL* hal, UGVSteeringType steering_type, VehicleType type);
+
     void update_controller(float dt) override;
     bool check_arming_inputs(std::string& failure_reason) const override;
     void on_arm() override;

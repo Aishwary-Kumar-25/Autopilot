@@ -141,3 +141,7 @@ All five automated test suites will execute:
 Enable QGC's virtual joystick (or plug in a gamepad), arm, and fly. Parameters,
 flight modes, arm/disarm, failsafe messages and PWM outputs all show in QGC.
 See [docs/MAVLINK_QGC.md](docs/MAVLINK_QGC.md).
+
+The same binary simulates a rover, a boat and a sub as well:
+`./autopilot_sitl --vehicle rover` (or `boat`, `sub`), or switch while it runs by
+setting the `VEHICLE_TYPE` parameter in QGC (0 quad, 1 rover, 2 sub, 3 boat).

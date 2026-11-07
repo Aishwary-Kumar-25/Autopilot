@@ -21,7 +21,7 @@ namespace mavlink {
 
 // ---- enums used by this stack (subset of common.xml / minimal.xml) ----
 enum MavType : uint8_t {
-    MAV_TYPE_GENERIC = 0, MAV_TYPE_QUADROTOR = 2, MAV_TYPE_GCS = 6, MAV_TYPE_GROUND_ROVER = 10,
+    MAV_TYPE_GENERIC = 0, MAV_TYPE_QUADROTOR = 2, MAV_TYPE_GCS = 6, MAV_TYPE_GROUND_ROVER = 10, MAV_TYPE_SURFACE_BOAT = 11,
     MAV_TYPE_SUBMARINE = 12, MAV_TYPE_HEXAROTOR = 13, MAV_TYPE_OCTOROTOR = 14, MAV_TYPE_TRICOPTER = 15,
 };
 enum MavAutopilot : uint8_t { MAV_AUTOPILOT_GENERIC = 0 };

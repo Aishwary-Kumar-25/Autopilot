@@ -74,7 +74,8 @@ const char* vehicle_mode_name(VehicleType type, uint32_t mode) {
     static const char* const ROV[] = {"MANUAL", "STABILIZE", "DEPTH_HOLD"};
     if (mode >= NUM_VEHICLE_MODES) return "UNKNOWN";
     switch (type) {
-        case VehicleType::UGV_GROUND_ROVER: return UGV[mode];
+        case VehicleType::UGV_GROUND_ROVER:
+        case VehicleType::USV_SURFACE_BOAT: return UGV[mode];
         case VehicleType::ROV_SUBMARINE: return ROV[mode];
         case VehicleType::UAV_MULTICOPTER:
         default: return UAV[mode];
@@ -94,7 +95,8 @@ void register_vehicle_params(ParamStore& store, VehicleManager& vm) {
     if (fltmode >= 0) store.set_persistent(static_cast<size_t>(fltmode), false);
 
     // ---- vehicle profile / frame (live: other code can change these too) ----
-    store.add_live("VEHICLE_TYPE", T::INT32, 0, 2,
+    // 0 multicopter, 1 rover, 2 ROV/sub, 3 boat
+    store.add_live("VEHICLE_TYPE", T::INT32, 0, 3,
         [m] { return static_cast<float>(m->get_active_type()); },
         [m](float v) {
             if (m->is_armed()) return false;   // never swap the controller of a flying vehicle

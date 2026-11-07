@@ -74,6 +74,7 @@ private:
     math::PID _depth_rate_pid;
 
     void setup_pids();
+    bool has_authority(float control::ActuatorConfig::*axis) const;
 };
 
 } // namespace vehicles

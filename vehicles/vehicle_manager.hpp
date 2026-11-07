@@ -10,6 +10,7 @@
 #include "vehicles/uav/uav_vehicle.hpp"
 #include "vehicles/ugv/ugv_vehicle.hpp"
 #include "vehicles/rov/rov_vehicle.hpp"
+#include "vehicles/usv/usv_vehicle.hpp"
 #include <memory>
 #include <string>
 

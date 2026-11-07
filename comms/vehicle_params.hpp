@@ -18,7 +18,7 @@ void register_vehicle_params(ParamStore& store, vehicles::VehicleManager& vm);
 /**
  * Flight modes, shared by every vehicle as MAVLink custom_mode 0..2:
  *   UAV  MANUAL / STABILIZE / ALT_HOLD
- *   UGV  MANUAL / HEADING_HOLD / SPEED_HOLD
+ *   UGV  MANUAL / HEADING_HOLD / SPEED_HOLD   (boat: same as UGV)
  *   ROV  MANUAL / STABILIZE / DEPTH_HOLD
  */
 constexpr uint32_t NUM_VEHICLE_MODES = 3;

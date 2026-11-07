@@ -30,6 +30,42 @@ Options: `--gcs HOST:PORT` (QGC on another PC or in WSL/VM),
 If no RC input has arrived, arming is refused with `PreArm: no RC input`, which
 QGC shows as a message. The real vehicle behaves the same way.
 
+## Drive a rover, a boat or a sub with the same firmware
+
+The same `autopilot_sitl` binary simulates every vehicle type, and you can
+switch between them while it runs, without restarting anything:
+
+```bash
+./build/autopilot_sitl --vehicle rover    # or boat, sub, quad (default)
+./build/autopilot_sitl --vehicle boat --current 0,0.3   # 0.3 m/s current toward the east
+```
+
+To switch from QGC: disarm, open **Vehicle Setup > Parameters**, set
+`VEHICLE_TYPE` (0 quad, 1 rover, 2 sub/ROV, 3 boat) and save. The firmware swaps
+its controller and mixer, the heartbeat's MAV_TYPE changes (so QGC shows the new
+vehicle icon), and the simulator replaces the physics body at the same spot and
+heading. The sensors, the sensor manager and the estimator are the same objects
+before and after: only the vehicle-specific part changes. The change is refused
+while armed. `ROV_THRUSTERS` (3, 4, 6 or 8) and `UAV_ROTORS` change the frame the
+same way.
+
+| VEHICLE_TYPE | Physics (`sim/`) | Outputs | Modes (FLTMODE 0 / 1 / 2) |
+|---|---|---|---|
+| 0 quad | `QuadModel`: 6-DOF, 4 motors | ch1-4 ESCs | MANUAL / STABILIZE / ALT_HOLD |
+| 1 rover | `RoverModel`: Ackermann, tyre grip limit | ch1 steering servo, ch2 ESC | MANUAL / HEADING_HOLD / SPEED_HOLD |
+| 2 sub | `SubModel`: 6-DOF, buoyancy, righting moment, real thruster positions | ch1-6 thrusters (3/4/6/8) | MANUAL / STABILIZE / DEPTH_HOLD |
+| 3 boat | `BoatModel`: surge/sway/yaw hull, water current | ch1 port, ch2 starboard thruster | MANUAL / HEADING_HOLD / SPEED_HOLD |
+
+Joystick mapping: on the rover and boat the forward stick is throttle and the
+yaw stick steers. On the sub the throttle stick is up/down (centre = hold), the
+forward stick is surge, roll stick is sway, and yaw turns. The sub loses GPS when
+it dives deeper than 20 cm, as a real one does, so the map position freezes and
+QGC shows depth as negative altitude.
+
+The boat runs the rover's controller. That is how ArduPilot Rover handles boats
+too: steering and speed control are the same, and only the physics and the
+outputs differ.
+
 ## What the vehicle sends
 
 | Message | Rate | Content |
@@ -196,6 +232,7 @@ ctest --test-dir build                 # includes test_mavlink (108 checks)
 pip install pymavlink
 python3 tools/sitl_gcs_check.py        # pymavlink as GCS: params, arm, climb, hold, land, disarm
 python3 tools/sitl_signing_check.py    # saved params across restarts, signing on/off, replay attack
+python3 tools/sitl_vehicles_check.py   # one SITL process switched rover -> boat -> sub -> quad from the GCS
 python3 tools/gen_mavlink_golden.py > tests/mavlink_golden.hpp   # after changing an encoder
 ```
 

@@ -143,37 +143,42 @@ void ActuatorMatrixMixer::setup_rov_4_basic() {
     _actuators[0] = {0.0f, 0.0f, 0.7f, 0.0f, 1.0f, 0.0f, true, false, 1000, 2000, 1500, true};
     // Thruster 2: Horizontal Starboard
     _actuators[1] = {0.0f, 0.0f, -0.7f, 0.0f, 1.0f, 0.0f, true, false, 1000, 2000, 1500, true};
-    // Thruster 3: Vertical Port (Heave + Roll)
-    _actuators[2] = {-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+    // Thruster 3: Vertical Port (Heave + Roll). Port pushing up rolls right-side-down,
+    // which is +roll in FRD (the sign was inverted before, so STABILIZE fought itself).
+    _actuators[2] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
     // Thruster 4: Vertical Starboard (Heave + Roll)
-    _actuators[3] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+    _actuators[3] = {-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
 }
 
 void ActuatorMatrixMixer::setup_rov_6_vectored() {
     _num_channels = 6;
-    // ArduSub Vectored 6-DOF BlueROV2 Standard Layout:
-    // T1: Forward-Right (Vectored 45 deg)
-    _actuators[0] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true};
-    // T2: Forward-Left  (Vectored 45 deg)
-    _actuators[1] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true};
-    // T3: Rear-Right     (Vectored 45 deg)
-    _actuators[2] = {0.0f, 0.0f, 1.0f, 0.0f, -1.0f, -1.0f, true, false, 1000, 2000, 1500, true};
-    // T4: Rear-Left      (Vectored 45 deg)
-    _actuators[3] = {0.0f, 0.0f, -1.0f, 0.0f, -1.0f, 1.0f, true, false, 1000, 2000, 1500, true};
-    // T5: Vertical-Right
-    _actuators[4] = {-1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
-    // T6: Vertical-Left
-    _actuators[5] = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+    // Vectored 6-DOF layout (BlueROV2-style), rows = {roll, pitch, yaw, heave, surge, sway}.
+    // Horizontal thrusters sit at the four corners, angled 45 deg; positive output pushes
+    // along these FRD directions:
+    //   T1 front-right (+x,-y)   T2 front-left (+x,+y)   T3 rear-right (+x,+y)   T4 rear-left (+x,-y)
+    // Each row is that thruster's real force/torque contribution, so the surge, sway and
+    // yaw columns are orthogonal: a pure yaw demand produces pure yaw (no sideways drift).
+    // (The previous rows had T3 = -T2 and T4 = -T1, rank 2: yaw also pushed the vehicle
+    // sideways. sim/sub_sim.hpp models the geometry and test_sitl_vehicles checks it.)
+    _actuators[0] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true};
+    _actuators[1] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true};
+    _actuators[2] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true};
+    _actuators[3] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true};
+    // T5/T6: vertical thrusters on the right/left side, level with the centre of mass:
+    // heave and roll only. They have no pitch authority (a 6-thruster BlueROV2 can't pitch).
+    _actuators[4] = {-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+    _actuators[5] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
 }
 
 void ActuatorMatrixMixer::setup_rov_8_heavy() {
     _num_channels = 8;
     // BlueROV2 Heavy & RoboSub AUV 8-Thruster Decoupled 6-DOF Configuration:
     // 4 Horizontal Vectored Thrusters (Surge, Sway, Yaw):
-    _actuators[0] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true}; // Fwd-Right
-    _actuators[1] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true}; // Fwd-Left
-    _actuators[2] = {0.0f, 0.0f, 1.0f, 0.0f, -1.0f, -1.0f, true, false, 1000, 2000, 1500, true}; // Rear-Right
-    _actuators[3] = {0.0f, 0.0f, -1.0f, 0.0f, -1.0f, 1.0f, true, false, 1000, 2000, 1500, true}; // Rear-Left
+    // (same geometry as the 6-thruster vectored frame, see setup_rov_6_vectored)
+    _actuators[0] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true}; // Fwd-Right
+    _actuators[1] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true};   // Fwd-Left
+    _actuators[2] = {0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, true, false, 1000, 2000, 1500, true};  // Rear-Right
+    _actuators[3] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f, true, false, 1000, 2000, 1500, true};  // Rear-Left
 
     // 4 Vertical Thrusters (Full Decoupled Pitch, Roll, and Heave Control!):
     // T5: Forward-Right Vertical (+Heave, -Roll, +Pitch)
@@ -213,8 +218,9 @@ void ActuatorMatrixMixer::setup_rov_n_symmetric(uint8_t n) {
     if (n_vert == 1) {
         _actuators[n_horiz] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
     } else if (n_vert == 2) {
-        _actuators[n_horiz] = {-1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
-        _actuators[n_horiz + 1] = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+        // right / left side, level with the centre of mass: heave + roll, no pitch authority
+        _actuators[n_horiz] = {-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
+        _actuators[n_horiz + 1] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};
     } else { // 4 vertical thrusters
         _actuators[n_horiz]     = {-1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true}; // FR
         _actuators[n_horiz + 1] = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, true, false, 1000, 2000, 1500, true};  // FL

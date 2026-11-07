@@ -23,6 +23,9 @@ void VehicleManager::instantiate_vehicle(VehicleType type) {
         case VehicleType::ROV_SUBMARINE:
             _active_vehicle = std::make_unique<ROVVehicle>(_hal);
             break;
+        case VehicleType::USV_SURFACE_BOAT:
+            _active_vehicle = std::make_unique<USVVehicle>(_hal);
+            break;
         case VehicleType::UAV_MULTICOPTER:
         default:
             _active_vehicle = std::make_unique<UAVVehicle>(_hal);

@@ -155,6 +155,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_sitl_flight PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_flight COMMAND test_sitl_flight)
 
+    # Rover, boat and ROV on the same firmware, switched at runtime (sim/sim_world.hpp)
+    add_executable(test_sitl_vehicles tests/test_sitl_vehicles.cpp)
+    target_link_libraries(test_sitl_vehicles PRIVATE autopilot_core pthread)
+    add_test(NAME test_sitl_vehicles COMMAND test_sitl_vehicles)
+
     add_executable(test_sitl_gps_attitude tests/test_sitl_gps_attitude.cpp)
     target_link_libraries(test_sitl_gps_attitude PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_gps_attitude COMMAND test_sitl_gps_attitude)

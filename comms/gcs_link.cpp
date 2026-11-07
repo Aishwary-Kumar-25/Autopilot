@@ -383,6 +383,7 @@ void GcsLink::handle_manual_control(const ManualControl& mc) {
             _vm->set_user_inputs(y, -x, r, std::clamp(z, 0.0f, 1.0f));
             break;
         case vehicles::VehicleType::UGV_GROUND_ROVER:
+        case vehicles::VehicleType::USV_SURFACE_BOAT:
             _vm->set_user_inputs(0.0f, 0.0f, r, x, x, 0.0f);
             break;
         case vehicles::VehicleType::ROV_SUBMARINE:
@@ -525,6 +526,7 @@ bool GcsLink::set_stream_interval(uint32_t msgid, uint32_t interval_ms) {
 uint8_t GcsLink::mav_type() const {
     switch (_vm->get_active_type()) {
         case vehicles::VehicleType::UGV_GROUND_ROVER: return MAV_TYPE_GROUND_ROVER;
+        case vehicles::VehicleType::USV_SURFACE_BOAT: return MAV_TYPE_SURFACE_BOAT;
         case vehicles::VehicleType::ROV_SUBMARINE: return MAV_TYPE_SUBMARINE;
         case vehicles::VehicleType::UAV_MULTICOPTER:
         default: break;

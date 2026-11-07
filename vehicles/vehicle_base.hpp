@@ -14,7 +14,8 @@ namespace vehicles {
 enum class VehicleType {
     UAV_MULTICOPTER,
     UGV_GROUND_ROVER,
-    ROV_SUBMARINE
+    ROV_SUBMARINE,
+    USV_SURFACE_BOAT   // runs the rover controller (heading/speed hold) on a hull
 };
 
 class VehicleBase {

@@ -6,7 +6,10 @@ namespace autopilot {
 namespace vehicles {
 
 UGVVehicle::UGVVehicle(hal::HAL* hal, UGVSteeringType steering_type)
-    : VehicleBase(hal, VehicleType::UGV_GROUND_ROVER) {
+    : UGVVehicle(hal, steering_type, VehicleType::UGV_GROUND_ROVER) {}
+
+UGVVehicle::UGVVehicle(hal::HAL* hal, UGVSteeringType steering_type, VehicleType type)
+    : VehicleBase(hal, type) {
     _mixer = std::make_unique<UGVMixer>(steering_type);
     setup_pids();
 }

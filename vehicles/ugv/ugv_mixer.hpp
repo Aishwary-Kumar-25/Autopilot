@@ -35,8 +35,10 @@ public:
             float forward = demands.forward != 0.0f ? demands.forward : demands.throttle;
             float turn = demands.yaw;
 
-            float left_motor = forward - turn;
-            float right_motor = forward + turn;
+            // Positive yaw = turn right (FRD): the left side must drive faster.
+            // (Was inverted, so heading hold steered away from the target.)
+            float left_motor = forward + turn;
+            float right_motor = forward - turn;
 
             pwm->set_channel(0, map_bidirectional_pwm(left_motor));
             pwm->set_channel(1, map_bidirectional_pwm(right_motor));

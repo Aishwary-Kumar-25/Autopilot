@@ -235,3 +235,55 @@ surviving a restart, and turning signing off. All checks pass.
 
 Still open: GPS time into the signing clock, and running the flash driver on a
 real STM32 (it compiles against the F4 and H7 HAL API, but has not run on hardware).
+
+---
+
+# Commit 7: one firmware, every vehicle, in the simulator
+
+The simulator now runs a rover, a boat and a sub (ROV) as well as the quad, on the
+same firmware build, and switches between them while it runs. Set `VEHICLE_TYPE`
+in QGC (0 quad, 1 rover, 2 sub, 3 boat) or start with `--vehicle rover|boat|sub`.
+This is the professor's "one firmware for every vehicle, with shared sensor fusion"
+requirement, shown end to end.
+
+What was added:
+- `sim/sim_body.hpp`: a common base for every simulated vehicle. The simulated
+  IMU, baro, compass and GPS read any body, so the same sensors and the same
+  SensorManager and SensorFusion run on every vehicle.
+- `sim/surface_sim.hpp`: an Ackermann rover (steering servo, tyre grip limit) and a
+  twin-thruster boat (hull that skids sideways in turns, reverse thrust weaker
+  than forward, optional water current).
+- `sim/sub_sim.hpp`: a 6-DOF ROV with buoyancy, a self-righting moment, hull
+  damping and the 3, 4, 6 and 8 thruster layouts at real positions. The geometry
+  is physical and not copied from the mixer, so a wrong mixer sign shows up as
+  the vehicle moving the wrong way. GPS drops out under water.
+- `sim/sim_world.hpp`: swaps the physics body whenever the firmware switches
+  vehicle type or frame, at the same spot and heading.
+- A boat vehicle type (`vehicles/usv/usv_vehicle.hpp`, `VEHICLE_TYPE` 3,
+  MAV_TYPE_SURFACE_BOAT in QGC). It runs the rover controller with twin-thruster
+  steering, which is how ArduPilot Rover handles boats.
+- `autopilot_sitl --vehicle`, `--current`, and a status line for every vehicle.
+- Tests: `test_sitl_vehicles` (88 checks) drives one VehicleManager through
+  rover, boat, sub (6 and 4 thrusters) and back to the quad. It also checks every
+  thruster layout against the physical geometry. `tools/sitl_vehicles_check.py`
+  does the same switching over MAVLink from a pymavlink ground station.
+
+Bugs the new simulator found and fixed:
+- Skid steering turned the wrong way (positive yaw slowed the left side). Heading
+  hold on a skid-steer rover or a twin-thruster boat steered away from the target.
+- 6- and 8-thruster ROV mixer: thrusters 3 and 4 were exact negatives of 1 and 2,
+  so surge, sway and yaw couldn't be controlled independently and a yaw command
+  also pushed the vehicle sideways. The rows now come from the real thruster
+  geometry.
+- 6-thruster ROV: the vertical thrusters had a pitch factor, but they sit level
+  with the centre of mass and can't pitch. Pitch stabilisation drove heave
+  instead. The controller now only stabilises axes the layout can push on.
+- 4-thruster ROV: roll signs were inverted, so STABILIZE capsized the vehicle
+  (it rolled to -175 degrees in the test).
+- ROV STABILIZE added the raw stick on top of the angle PID, so it held 18 degrees
+  when asked for 11. The stick now only sets the target angle.
+
+Seen but left for the tilt-without-GPS work: when the rover pulls away hard
+(2.5 m/s^2), the estimate briefly reads about 4 degrees nose-up until GPS-aided
+attitude takes over about half a second later. In steady turns the error stays
+under 1 degree.

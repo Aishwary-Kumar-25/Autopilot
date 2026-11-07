@@ -78,6 +78,15 @@ bool ROVVehicle::set_custom_thruster(uint8_t channel, float roll, float pitch, f
     return _matrix_mixer->set_actuator_config(channel, cfg);
 }
 
+bool ROVVehicle::has_authority(float control::ActuatorConfig::*axis) const {
+    if (!_matrix_mixer) return false;
+    for (uint8_t i = 0; i < _matrix_mixer->get_num_channels(); ++i) {
+        const auto& a = _matrix_mixer->get_actuator_config(i);
+        if (a.enabled && a.*axis != 0.0f) return true;
+    }
+    return false;
+}
+
 void ROVVehicle::setup_pids() {
     // Attitude stabilization (Roll & Pitch self-leveling)
     _roll_pid.set_gains(2.0f, 0.1f, 0.05f);
@@ -140,13 +149,17 @@ void ROVVehicle::update_controller(float dt) {
     // Stabilize attitude (keep ROV level in water when user input is neutral)
     if (_mode == ROVMode::STABILIZE || _mode == ROVMode::DEPTH_HOLD) {
         // Roll & Pitch self leveling toward 0 or user target angle
-        if (_thruster_count >= 4) {
+        // Only stabilise an axis the thruster layout can actually push on (a 6-thruster
+        // vectored frame has roll but no pitch authority; a 3-thruster one has neither).
+        if (has_authority(&control::ActuatorConfig::roll)) {
+            // The stick sets the target angle; the PID alone drives toward it. (Adding the
+            // raw stick on top as well left a steady-state offset: 0.2 rad asked, 0.32 held.)
             float target_roll = _user_input.roll * 0.5f;
-            _demands.roll = _user_input.roll + _roll_pid.update(target_roll, state.euler_rad.x, dt);
+            _demands.roll = _roll_pid.update(target_roll, state.euler_rad.x, dt);
         }
-        if (_thruster_count >= 6) {
+        if (has_authority(&control::ActuatorConfig::pitch)) {
             float target_pitch = _user_input.pitch * 0.5f;
-            _demands.pitch = _user_input.pitch + _pitch_pid.update(target_pitch, state.euler_rad.y, dt);
+            _demands.pitch = _pitch_pid.update(target_pitch, state.euler_rad.y, dt);
         }
     }
 
