@@ -42,6 +42,23 @@ public:
     bool write_registers(uint8_t reg_addr, const uint8_t* data, size_t len) override;
 };
 
+class PosixCANDevice : public CANDevice {
+public:
+    bool init(uint32_t bitrate_bps = 1000000) override;
+    bool send_frame(const CANFrame& frame) override;
+    bool receive_frame(CANFrame& frame) override;
+    size_t available() override;
+
+    void inject_frame(const CANFrame& frame);
+    const std::vector<CANFrame>& get_transmitted_frames() const { return _tx_frames; }
+    void clear_transmitted_frames() { _tx_frames.clear(); }
+
+private:
+    std::vector<CANFrame> _rx_queue;
+    std::vector<CANFrame> _tx_frames;
+    uint32_t _bitrate{1000000};
+};
+
 class PosixUARTDevice : public UARTDevice {
 public:
     bool init(uint32_t baud_rate) override;
@@ -98,11 +115,14 @@ public:
 
     I2CDevice* get_i2c(uint8_t bus_index = 0) override;
     SPIDevice* get_spi(uint8_t bus_index = 0) override;
+    CANDevice* get_can(uint8_t bus_index = 0) override;
     UARTDevice* get_uart(uint8_t port_index = 0) override;
     PWMOutput* get_pwm() override;
     Time* get_time() override;
 
     PosixI2CDevice& i2c() { return _i2c; }
+    PosixSPIDevice& spi() { return _spi; }
+    PosixCANDevice& can() { return _can; }
     PosixUARTDevice& uart() { return _uart; }
     PosixPWMOutput& pwm() { return _pwm; }
     PosixTime& time() { return _time; }
@@ -110,6 +130,7 @@ public:
 private:
     PosixI2CDevice _i2c;
     PosixSPIDevice _spi;
+    PosixCANDevice _can;
     PosixUARTDevice _uart;
     PosixPWMOutput _pwm;
     PosixTime _time;

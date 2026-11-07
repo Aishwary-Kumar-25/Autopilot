@@ -93,6 +93,35 @@ bool PosixSPIDevice::write_registers(uint8_t, const uint8_t*, size_t) {
     return true;
 }
 
+// ---------------- PosixCANDevice ----------------
+
+bool PosixCANDevice::init(uint32_t bitrate_bps) {
+    _bitrate = bitrate_bps;
+    _rx_queue.clear();
+    _tx_frames.clear();
+    return true;
+}
+
+bool PosixCANDevice::send_frame(const CANFrame& frame) {
+    _tx_frames.push_back(frame);
+    return true;
+}
+
+bool PosixCANDevice::receive_frame(CANFrame& frame) {
+    if (_rx_queue.empty()) return false;
+    frame = _rx_queue.front();
+    _rx_queue.erase(_rx_queue.begin());
+    return true;
+}
+
+size_t PosixCANDevice::available() {
+    return _rx_queue.size();
+}
+
+void PosixCANDevice::inject_frame(const CANFrame& frame) {
+    _rx_queue.push_back(frame);
+}
+
 // ---------------- PosixUARTDevice ----------------
 
 bool PosixUARTDevice::init(uint32_t) {
@@ -223,6 +252,10 @@ I2CDevice* PosixHAL::get_i2c(uint8_t) {
 
 SPIDevice* PosixHAL::get_spi(uint8_t) {
     return &_spi;
+}
+
+CANDevice* PosixHAL::get_can(uint8_t) {
+    return &_can;
 }
 
 UARTDevice* PosixHAL::get_uart(uint8_t) {

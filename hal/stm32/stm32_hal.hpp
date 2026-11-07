@@ -41,6 +41,22 @@ private:
 };
 
 /**
+ * @brief STM32 Hardware CAN / FDCAN Driver for DroneCAN.
+ */
+class STM32CANDevice : public CANDevice {
+public:
+    STM32CANDevice(void* hcan_handle = nullptr);
+
+    bool init(uint32_t bitrate_bps = 1000000) override;
+    bool send_frame(const CANFrame& frame) override;
+    bool receive_frame(CANFrame& frame) override;
+    size_t available() override;
+
+private:
+    void* _hcan{nullptr};
+};
+
+/**
  * @brief STM32 Hardware UART Driver with DMA/Interrupt ring buffer.
  */
 class STM32UARTDevice : public UARTDevice {
@@ -78,12 +94,14 @@ public:
 
     I2CDevice* get_i2c(uint8_t bus_index = 0) override;
     SPIDevice* get_spi(uint8_t bus_index = 0) override;
+    CANDevice* get_can(uint8_t bus_index = 0) override;
     UARTDevice* get_uart(uint8_t port_index = 0) override;
     PWMOutput* get_pwm() override;
     Time* get_time() override;
 
     STM32I2CDevice& i2c() { return _i2c; }
     STM32SPIDevice& spi() { return _spi; }
+    STM32CANDevice& can() { return _can; }
     STM32UARTDevice& uart() { return _uart; }
     STM32PWMOutput& pwm() { return _pwm; }
     STM32Time& time() { return _time; }
@@ -91,6 +109,7 @@ public:
 private:
     STM32I2CDevice _i2c;
     STM32SPIDevice _spi;
+    STM32CANDevice _can;
     STM32UARTDevice _uart;
     STM32PWMOutput _pwm;
     STM32Time _time;

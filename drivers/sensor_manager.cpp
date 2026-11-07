@@ -1,9 +1,25 @@
 #include "sensor_manager.hpp"
+
+#ifdef ENABLE_DRIVER_MPU6050
 #include "drivers/imu/mpu6050.hpp"
+#endif
+
+#ifdef ENABLE_DRIVER_ICM20689
 #include "drivers/imu/icm20689.hpp"
+#endif
+
+#ifdef ENABLE_DRIVER_BMP280
 #include "drivers/baro/bmp280.hpp"
+#endif
+
+#ifdef ENABLE_DRIVER_QMC5883L
 #include "drivers/mag/qmc5883l.hpp"
+#endif
+
+#ifdef ENABLE_DRIVER_NMEA_GPS
 #include "drivers/gps/nmea.hpp"
+#endif
+
 #include <iostream>
 
 namespace autopilot {
@@ -65,24 +81,30 @@ void SensorManager::auto_discover_sensors() {
             if (i2c->probe(addr)) {
                 uint8_t who = 0;
                 if (i2c->read_byte(addr, 0x75, who)) {
+#ifdef ENABLE_DRIVER_ICM20689
                     if (who == 0x98) {
                         auto icm = std::make_shared<ICM20689>(i2c, time, addr);
                         if (icm->init()) {
                             register_sensor(icm);
                             notify_event(icm->name(), SensorHealth::HEALTHY);
                         }
-                    } else if (who == 0x68 || who == 0x70 || who == 0x72) {
+                    }
+#endif
+#ifdef ENABLE_DRIVER_MPU6050
+                    if (who == 0x68 || who == 0x70 || who == 0x72) {
                         auto mpu = std::make_shared<MPU6050>(i2c, time, addr);
                         if (mpu->init()) {
                             register_sensor(mpu);
                             notify_event(mpu->name(), SensorHealth::HEALTHY);
                         }
                     }
+#endif
                 }
             }
         }
 
         // 2. Probe for Barometer at 0x76 and 0x77
+#ifdef ENABLE_DRIVER_BMP280
         const uint8_t baro_addrs[] = {0x76, 0x77};
         for (uint8_t addr : baro_addrs) {
             if (i2c->probe(addr)) {
@@ -98,8 +120,10 @@ void SensorManager::auto_discover_sensors() {
                 }
             }
         }
+#endif
 
         // 3. Probe for Magnetometer at 0x0D
+#ifdef ENABLE_DRIVER_QMC5883L
         if (i2c->probe(0x0D)) {
             auto qmc = std::make_shared<QMC5883L>(i2c, time, 0x0D);
             if (qmc->init()) {
@@ -107,9 +131,11 @@ void SensorManager::auto_discover_sensors() {
                 notify_event(qmc->name(), SensorHealth::HEALTHY);
             }
         }
+#endif
     }
 
     // 4. GPS on UART
+#ifdef ENABLE_DRIVER_NMEA_GPS
     auto* uart = _hal->get_uart();
     if (uart && time) {
         auto gps = std::make_shared<NMEAGPS>(uart, time);
@@ -118,6 +144,7 @@ void SensorManager::auto_discover_sensors() {
             notify_event(gps->name(), SensorHealth::HEALTHY);
         }
     }
+#endif
 }
 
 void SensorManager::update() {
@@ -209,19 +236,24 @@ void SensorManager::probe_and_recover_sensors() {
                 if ((addr == 0x68 || addr == 0x69) && (!_active_imu || !_active_imu->is_healthy())) {
                     uint8_t who = 0;
                     if (i2c->read_byte(addr, 0x75, who)) {
+#ifdef ENABLE_DRIVER_ICM20689
                         if (who == 0x98) {
                             auto icm = std::make_shared<ICM20689>(i2c, time, addr);
                             if (icm->init()) {
                                 register_sensor(icm);
                                 notify_event(icm->name(), SensorHealth::HEALTHY);
                             }
-                        } else if (who == 0x68 || who == 0x70 || who == 0x72) {
+                        }
+#endif
+#ifdef ENABLE_DRIVER_MPU6050
+                        if (who == 0x68 || who == 0x70 || who == 0x72) {
                             auto mpu = std::make_shared<MPU6050>(i2c, time, addr);
                             if (mpu->init()) {
                                 register_sensor(mpu);
                                 notify_event(mpu->name(), SensorHealth::HEALTHY);
                             }
                         }
+#endif
                     }
                 }
             }

@@ -8,6 +8,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BUILD_TESTS "Build test suite" ON)
 option(STM32_TARGET "Target STM32 microcontroller (ARM Cortex-M)" OFF)
 
+# Modular Driver Compilation Flags (avoids bloated compile times)
+option(ENABLE_DRIVER_MPU6050  "Compile MPU6050 IMU Driver" ON)
+option(ENABLE_DRIVER_ICM20689 "Compile ICM-20689 IMU Driver" ON)
+option(ENABLE_DRIVER_BMP280   "Compile BMP280 Barometer Driver" ON)
+option(ENABLE_DRIVER_QMC5883L "Compile QMC5883L Magnetometer Driver" ON)
+option(ENABLE_DRIVER_NMEA_GPS "Compile NMEA GPS Driver" ON)
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/hal
@@ -30,11 +37,6 @@ set(CORE_SOURCES
     hal/stm32/stm32_hal.cpp
     hal/stm32/stm32_pwm.cpp
     drivers/sensor_manager.cpp
-    drivers/imu/mpu6050.cpp
-    drivers/imu/icm20689.cpp
-    drivers/baro/bmp280.cpp
-    drivers/mag/qmc5883l.cpp
-    drivers/gps/nmea.cpp
     fusion/madgwick.cpp
     fusion/complementary.cpp
     fusion/ahrs_interface.cpp
@@ -45,7 +47,33 @@ set(CORE_SOURCES
     vehicles/rov/rov_vehicle.cpp
     system/scheduler.cpp
     system/telemetry.cpp
+    system/pubsub.hpp
 )
+
+if(ENABLE_DRIVER_MPU6050)
+    list(APPEND CORE_SOURCES drivers/imu/mpu6050.cpp)
+    add_compile_definitions(ENABLE_DRIVER_MPU6050=1)
+endif()
+
+if(ENABLE_DRIVER_ICM20689)
+    list(APPEND CORE_SOURCES drivers/imu/icm20689.cpp)
+    add_compile_definitions(ENABLE_DRIVER_ICM20689=1)
+endif()
+
+if(ENABLE_DRIVER_BMP280)
+    list(APPEND CORE_SOURCES drivers/baro/bmp280.cpp)
+    add_compile_definitions(ENABLE_DRIVER_BMP280=1)
+endif()
+
+if(ENABLE_DRIVER_QMC5883L)
+    list(APPEND CORE_SOURCES drivers/mag/qmc5883l.cpp)
+    add_compile_definitions(ENABLE_DRIVER_QMC5883L=1)
+endif()
+
+if(ENABLE_DRIVER_NMEA_GPS)
+    list(APPEND CORE_SOURCES drivers/gps/nmea.cpp)
+    add_compile_definitions(ENABLE_DRIVER_NMEA_GPS=1)
+endif()
 
 add_library(autopilot_core STATIC ${CORE_SOURCES})
 
@@ -67,4 +95,8 @@ if(BUILD_TESTS)
     add_executable(test_vehicle_controls tests/test_vehicle_controls.cpp)
     target_link_libraries(test_vehicle_controls PRIVATE autopilot_core pthread)
     add_test(NAME test_vehicle_controls COMMAND test_vehicle_controls)
+
+    add_executable(test_pubsub tests/test_pubsub.cpp)
+    target_link_libraries(test_pubsub PRIVATE autopilot_core pthread)
+    add_test(NAME test_pubsub COMMAND test_pubsub)
 endif()

@@ -56,6 +56,30 @@ public:
 };
 
 /**
+ * @brief Hardware CAN frame structure (CAN 2.0B).
+ */
+struct CANFrame {
+    uint32_t id{0};          // 11-bit or 29-bit CAN ID (DroneCAN uses 29-bit)
+    bool is_extended{true};  // 29-bit extended ID flag
+    bool is_rtr{false};      // Remote transmission request
+    uint8_t dlc{0};          // Data length code (0 - 8 bytes)
+    uint8_t data[8]{0};
+};
+
+/**
+ * @brief Hardware-independent CAN Bus interface for DroneCAN / UAVCAN sensors and ESCs.
+ */
+class CANDevice {
+public:
+    virtual ~CANDevice() = default;
+
+    virtual bool init(uint32_t bitrate_bps = 1000000) = 0; // 1 Mbps default DroneCAN rate
+    virtual bool send_frame(const CANFrame& frame) = 0;
+    virtual bool receive_frame(CANFrame& frame) = 0;
+    virtual size_t available() = 0;
+};
+
+/**
  * @brief Hardware-independent UART/Serial interface (GPS, Telemetry).
  */
 class UARTDevice {
@@ -126,6 +150,7 @@ public:
 
     virtual I2CDevice* get_i2c(uint8_t bus_index = 0) = 0;
     virtual SPIDevice* get_spi(uint8_t bus_index = 0) = 0;
+    virtual CANDevice* get_can(uint8_t bus_index = 0) = 0;
     virtual UARTDevice* get_uart(uint8_t port_index = 0) = 0;
     virtual PWMOutput* get_pwm() = 0;
     virtual Time* get_time() = 0;
