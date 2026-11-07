@@ -105,6 +105,7 @@ void VehicleBase::step(float dt) {
         _sensors->update();
 
         // 2. Update universal sensor fusion engine
+        _fusion->set_multirotor_in_air(multirotor_in_air());
         _fusion->update(dt);
 
         // 3. Periodic low-rate plug-and-play sensor recovery check

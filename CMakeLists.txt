@@ -164,6 +164,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_sitl_gps_attitude PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_gps_attitude COMMAND test_sitl_gps_attitude)
 
+    # Attitude without GPS: rotor-drag aiding and online gyro bias
+    add_executable(test_sitl_drag_bias tests/test_sitl_drag_bias.cpp)
+    target_link_libraries(test_sitl_drag_bias PRIVATE autopilot_core pthread)
+    add_test(NAME test_sitl_drag_bias COMMAND test_sitl_drag_bias)
+
     # MAVLink codec (golden frames from pymavlink) + GCS link behaviour
     add_executable(test_mavlink tests/test_mavlink.cpp)
     target_link_libraries(test_mavlink PRIVATE autopilot_core pthread)

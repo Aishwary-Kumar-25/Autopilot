@@ -43,6 +43,8 @@ public:
     virtual bool arm(std::string& failure_reason);
     virtual void disarm();
     virtual bool is_armed() const { return _arming.is_armed(); }
+    /** True for a multirotor that is flying: lets the fusion use its rotor-drag model. */
+    virtual bool multirotor_in_air() const { return false; }
 
     VehicleType get_type() const { return _type; }
     virtual const char* get_type_name() const = 0;

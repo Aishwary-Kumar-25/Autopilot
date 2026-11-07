@@ -35,7 +35,10 @@ public:
     double max_thrust = 6.0;      // N per motor
     double kq = 0.016;            // yaw torque / thrust (m)
     double motor_tau = 0.03;      // s
-    double drag = 0.25;           // N per m/s (linear)
+    double drag = 0.25;           // N per m/s of airspeed (linear: rotor / momentum drag)
+    double drag_cda = 0.0;        // m^2, bluff-body drag area (quadratic); 0 = off
+    double rho = 1.225;           // kg/m^3
+    V3 wind;                      // NED, m/s (air moves at this velocity)
 
     double thrust[4]{0, 0, 0, 0};
     bool on_ground = true;
@@ -78,7 +81,10 @@ public:
         torque = torque - omega * 0.002; // small rotational damping
 
         // Translational dynamics (NED)
-        V3 force = body_to_ned(V3(0, 0, -total)) + V3(0, 0, mass * g) - vel * drag;
+        const V3 air = vel - wind;   // air-relative velocity
+        const double airspeed = std::sqrt(air.dot(air));
+        V3 force = body_to_ned(V3(0, 0, -total)) + V3(0, 0, mass * g) - air * drag -
+                   air * (0.5 * rho * drag_cda * airspeed);
         accel_ned = force * (1.0 / mass);
 
         // Ground contact at altitude 0
@@ -133,16 +139,22 @@ public:
     const char* name() const override { return _name; }
     bool init() override { return true; }
     void set_fault(Fault f) { _fault = f; }
+    // Residual bias left after the boot calibration (e.g. temperature drift in flight).
+    math::Vector3f gyro_bias{0, 0, 0};
+    // Accelerometer noise, m/s^2 rms per sample (0.05 = clean bench; motor vibration on
+    // a real frame after the chip's DLPF is more like 0.5-2).
+    double accel_noise = 0.05;
 
     bool update() override {
         if (_fault == Fault::DROPOUT) return false;      // bus silent: no new samples
         if (_fault != Fault::STUCK) {
             const SimBody& m = *_ctx->model;
             const V3 f = m.specific_force();
-            _accel = math::Vector3f(float(f.x + _ctx->noise(0.05)), float(f.y + _ctx->noise(0.05)),
-                                    float(f.z + _ctx->noise(0.05)));
+            _accel = math::Vector3f(float(f.x + _ctx->noise(accel_noise)), float(f.y + _ctx->noise(accel_noise)),
+                                    float(f.z + _ctx->noise(accel_noise)));
             _gyro = math::Vector3f(float(m.omega.x + _ctx->noise(0.004)), float(m.omega.y + _ctx->noise(0.004)),
                                    float(m.omega.z + _ctx->noise(0.004)));
+            _gyro += gyro_bias;
             if (_fault == Fault::GYRO_OFFSET) _gyro.x += 0.8f;
             if (_fault == Fault::NOT_A_NUMBER) _gyro.y = std::numeric_limits<float>::quiet_NaN();
         }

@@ -115,6 +115,10 @@ Safety rules:
 | MC_ROLL_P, MC_PITCH_P | float | angle loop P |
 | MC_ROLLRATE_P/I/D, MC_PITCHRATE_P/I/D, MC_YAWRATE_P/I | float | rate loops |
 | MC_ALT_P, MC_CLIMB_P/I/D | float | altitude hold |
+| EKF_DRAG_MCOEF | float 1/s | multicopter rotor-drag coefficient for tilt without GPS (learned in flight, saved after landing) |
+| EKF_DRAG_BCOEF | float kg/m^2 | body ballistic coefficient (0 = no quadratic drag) |
+| EKF_DRAG_AID, EKF_DRAG_CAL | int 0/1 | rotor-drag tilt aiding / in-flight calibration of EKF_DRAG_MCOEF |
+| EKF_GBIAS_LEARN | int 0/1 | online gyro bias estimation |
 
 Tuning survives a vehicle-profile switch, because stored values are re-applied
 to the new vehicle object, and it survives a reboot (next section).

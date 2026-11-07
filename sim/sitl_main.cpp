@@ -287,6 +287,8 @@ int main(int argc, char** argv) {
 
         hal.time().advance_time_ms(LOOP_US / 1000);
         ++ticks;
+        // After a flight: keep what the fusion learned (drag coefficient) for next boot.
+        if (ticks % 250 == 0) comms::sync_learned_params(params, vm);
 
         if (!quiet && ticks % 250 == 0) {
             const auto& st = vm.get_latest_state();

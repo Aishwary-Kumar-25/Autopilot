@@ -154,6 +154,7 @@ void VehicleManager::step(float dt) {
     _sensors->probe_and_recover_sensors();
 
     // 2. Run universal sensor fusion engine
+    _fusion->set_multirotor_in_air(_active_vehicle && _active_vehicle->multirotor_in_air());
     _fusion->update(dt);
 
     // 3. Publish fresh state to Pub/Sub middleware

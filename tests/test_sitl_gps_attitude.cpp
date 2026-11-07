@@ -16,6 +16,9 @@
  *   B. 12 deg forward pitch + yaw rate for 6 s (sustained turn)
  *   C. B again with a mis-modelled GPS latency, and with 5 Hz / 1 Hz receivers
  *   D. A again with the GPS lost half way through
+ *
+ * The "no GPS" baseline here has the rotor-drag model switched off (accelerometer
+ * only), to show the problem; tests/test_sitl_drag_bias.cpp covers drag aiding.
  */
 #include "tests/sitl_rig.hpp"
 #include "tests/test_common.hpp"
@@ -43,9 +46,10 @@ struct GpsSetup {
 };
 
 Result fly(bool with_gps, float roll_stick, float pitch_stick, float yaw_stick, double hold_s,
-           GpsSetup g = GpsSetup{}) {
+           GpsSetup g = GpsSetup{}, bool drag_aiding = true) {
     Rig r(with_gps);
     Result out;
+    r.vm->get_fusion()->set_drag_aiding_enabled(drag_aiding);
     if (r.gps) {
         r.gps->period_ms = g.period_ms;
         r.gps->latency_ms = g.latency_ms;
@@ -83,9 +87,9 @@ Result fly(bool with_gps, float roll_stick, float pitch_stick, float yaw_stick, 
 }
 
 void report(const char* name, const Result& no_gps, const Result& gps) {
-    std::printf("  %-22s no GPS: max err %5.2f deg, end err %5.2f deg (truth %5.2f)\n", name, no_gps.max_err_deg,
+    std::printf("  %-22s no GPS, accel only: max err %5.2f deg, end err %5.2f deg (truth %5.2f)\n", name, no_gps.max_err_deg,
                 no_gps.end_err_deg, no_gps.end_truth_deg);
-    std::printf("  %-22s   GPS : max err %5.2f deg, end err %5.2f deg (truth %5.2f)\n", "", gps.max_err_deg,
+    std::printf("  %-22s   GPS             : max err %5.2f deg, end err %5.2f deg (truth %5.2f)\n", "", gps.max_err_deg,
                 gps.end_err_deg, gps.end_truth_deg);
 }
 
@@ -95,12 +99,12 @@ int main() {
     std::printf("== SITL GPS-aided attitude ==\n");
 
     // A. Held 15 deg bank: 0.5 stick of a 30 deg max angle.
-    const Result a0 = fly(false, 0.5f, 0.0f, 0.0f, 4.0);
+    const Result a0 = fly(false, 0.5f, 0.0f, 0.0f, 4.0, GpsSetup{}, false);
     const Result a1 = fly(true, 0.5f, 0.0f, 0.0f, 4.0);
     report("A. 15 deg bank, 4 s", a0, a1);
 
     // B. Forward pitch with constant yaw rate: a sustained turn.
-    const Result b0 = fly(false, 0.0f, -0.4f, 0.5f, 6.0);
+    const Result b0 = fly(false, 0.0f, -0.4f, 0.5f, 6.0, GpsSetup{}, false);
     const Result b1 = fly(true, 0.0f, -0.4f, 0.5f, 6.0);
     report("B. 12 deg pitch + yaw", b0, b1);
 

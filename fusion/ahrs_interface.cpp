@@ -1,4 +1,5 @@
 #include "ahrs_interface.hpp"
+#include <algorithm>
 #include <cmath>
 
 namespace autopilot {
@@ -53,8 +54,28 @@ void ComplementaryAttitude::update(const math::Vector3f& g, const math::Vector3f
 
 // ---------------- SensorFusion ----------------
 
+// Gyro-only quaternion propagation, the same Euler step Madgwick uses, so the
+// difference between it and the filter output is exactly the applied correction.
+static math::Quaternion propagate_gyro(const math::Quaternion& q, const math::Vector3f& w, float dt) {
+    math::Quaternion r(q.q0 + 0.5f * dt * (-q.q1 * w.x - q.q2 * w.y - q.q3 * w.z),
+                       q.q1 + 0.5f * dt * (q.q0 * w.x + q.q2 * w.z - q.q3 * w.y),
+                       q.q2 + 0.5f * dt * (q.q0 * w.y - q.q1 * w.z + q.q3 * w.x),
+                       q.q3 + 0.5f * dt * (q.q0 * w.z + q.q1 * w.y - q.q2 * w.x));
+    r.normalize();
+    return r;
+}
+
+static bool finite3(const math::Vector3f& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
 SensorFusion::SensorFusion(drivers::SensorManager* sensor_manager)
     : _sensors(sensor_manager) {}
+
+void SensorFusion::set_drag_model(float mcoef, float bcoef) {
+    if (std::isfinite(mcoef) && mcoef > 0.01f) _drag_mcoef = mcoef;
+    if (std::isfinite(bcoef) && bcoef >= 0.0f) _drag_bcoef = bcoef;
+}
 
 void SensorFusion::reset() {
     _attitude_filter.reset();
@@ -76,6 +97,13 @@ void SensorFusion::reset() {
     _gps_count = _gps_head = 0;
     _have_gps_corr = false;
     _gps_aiding = false;
+    _tilt_aiding = TiltAiding::ACCEL;
+    _gyro_bias = math::Vector3f(0, 0, 0);
+    _q_pred_valid = false;
+    _bias_imu = nullptr;
+    _drag_active = false;
+    _drag_vel = _drag_innov = _drag_vm_lp = _drag_lin_body = math::Vector3f(0, 0, 0);
+    _gps_lin_valid = false;
 }
 
 math::Vector3f SensorFusion::body_to_ned(const math::Vector3f& v_body) const {
@@ -95,10 +123,19 @@ void SensorFusion::update_attitude(float dt) {
         return;
     }
 
-    const auto& gyro = imu->get_gyro();
+    // The learned bias belongs to one IMU: start again after a failover.
+    if (imu != _bias_imu) {
+        _bias_imu = imu;
+        _gyro_bias = math::Vector3f(0, 0, 0);
+        _q_pred_valid = false;
+    }
+
+    const math::Vector3f& gyro_raw = imu->get_gyro();
+    const math::Vector3f gyro = gyro_raw - _gyro_bias;
     const auto& accel = imu->get_accel();
     _now_ms = imu->last_update_ms();
     _state.angular_velocity = gyro;
+    _state.gyro_bias = _gyro_bias;
     _state.linear_accel_body = accel;
 
     auto* compass = _sensors->get_active_compass();
@@ -121,19 +158,40 @@ void SensorFusion::update_attitude(float dt) {
         _attitude_filter.set_beta(BETA_ALIGN);
     }
     _time_since_align += dt;
-    if (_time_since_align > ALIGN_SETTLE_S) _attitude_filter.set_beta(BETA_FLIGHT);
+    const bool settled = _time_since_align > ALIGN_SETTLE_S;
+    if (settled) _attitude_filter.set_beta(BETA_FLIGHT);
 
-    // GPS-aided while time-aligned GPS tilt corrections keep arriving.
-    _gps_aiding = _have_gps_corr && _time_since_align > ALIGN_SETTLE_S &&
-                  _now_ms - _last_gps_corr_ms < GPS_AIDING_TIMEOUT_MS;
+    // Learn the gyro bias from whatever corrected the primary since the last tick
+    // (accel, mag, drag or GPS), before this tick's propagation.
+    const bool drag_quiet = _tilt_aiding != TiltAiding::DRAG ||
+                            (_drag_time_s > DRAG_SETTLE_S && _drag_innov.length() < BIAS_LEARN_MAX_DRAG_INNOV);
+    if (_bias_learning && _q_pred_valid && settled && drag_quiet && gyro.length() < BIAS_LEARN_MAX_RATE) {
+        learn_gyro_bias();
+    }
 
-    // Manoeuvre acceleration from GPS velocity, removed from the accelerometer for the
-    // backup filter and the selector's tilt reference.
-    const math::Vector3f lin_body = _attitude_filter.get_quaternion().conjugate().rotate_vector(_gps_lin_accel);
+    // GPS-aided while time-aligned GPS tilt corrections keep arriving. In the air the
+    // drag model takes over sooner than a gyro-only coast would.
+    const bool mc_in_air = _mc_in_air && _drag_enabled;
+    const uint32_t gps_timeout = mc_in_air ? GPS_AIDING_TIMEOUT_DRAG_MS : GPS_AIDING_TIMEOUT_MS;
+    _gps_aiding = _have_gps_corr && settled && _now_ms - _last_gps_corr_ms < gps_timeout;
+    // Drag aiding starts at lift-off (not after ALIGN_SETTLE_S): Madgwick would read the
+    // drag of a wind-blown take-off as tilt.
+    const bool drag_tilt = mc_in_air && !_gps_aiding;
+    if (!mc_in_air) _drag_active = false;
+
+    // Manoeuvre acceleration (GPS-derived, else from the drag model), removed from the
+    // accelerometer for the backup filter and the selector's tilt reference.
+    math::Vector3f lin_body(0, 0, 0);
+    if (_gps_lin_valid) {
+        lin_body = _attitude_filter.get_quaternion().conjugate().rotate_vector(_gps_lin_accel);
+    } else if (_drag_active) {
+        lin_body = _drag_lin_body;
+    }
     const math::Vector3f accel_ref = accel - lin_body;
 
-    if (_gps_aiding) {
-        // Gyro only here; tilt comes from gps_tilt_correction(), heading from the mag.
+    const math::Quaternion q_start = _attitude_filter.get_quaternion();
+    if (_gps_aiding || drag_tilt) {
+        // Gyro only here; tilt comes from GPS or the drag observer, heading from the mag.
         _attitude_filter.update_imu(gyro, math::Vector3f(0, 0, 0), dt);
         if (use_mag) mag_heading_correction(mag, dt);
     } else {
@@ -145,7 +203,15 @@ void SensorFusion::update_attitude(float dt) {
             _attitude_filter.update_imu(gyro, down, dt);
         }
     }
-    _backup.update(gyro, accel_ref, use_mag ? &mag : nullptr, dt);
+    // The observer runs whenever a multirotor flies (so it is converged the moment GPS
+    // drops out) but only steers the attitude without GPS.
+    if (mc_in_air) drag_observer(gyro, accel, drag_tilt, dt);
+    _tilt_aiding = _gps_aiding ? TiltAiding::GPS : (drag_tilt ? TiltAiding::DRAG : TiltAiding::ACCEL);
+    _q_pred = propagate_gyro(q_start, gyro, dt);
+    _q_pred_valid = true;
+
+    // Backup: raw (boot-calibrated) gyro, independent of the learned bias.
+    _backup.update(gyro_raw, accel_ref, use_mag ? &mag : nullptr, dt);
 
     // Integrate the earth-frame specific force for the GPS tilt comparison.
     {
@@ -173,6 +239,9 @@ void SensorFusion::update_attitude(float dt) {
     if (!primary_ok) {
         src = 1;
         _attitude_filter.set_quaternion(math::Quaternion::from_euler(_backup.roll, _backup.pitch, _backup.yaw));
+        _q_pred_valid = false; // a reset, not a drift correction
+        _drag_active = false;
+        if (!finite3(_gyro_bias)) _gyro_bias = math::Vector3f(0, 0, 0);
     } else {
         float pr, pp, py;
         q_primary.to_euler(pr, pp, py);
@@ -194,6 +263,7 @@ void SensorFusion::update_attitude(float dt) {
     _state.attitude_q = _source ? math::Quaternion::from_euler(_backup.roll, _backup.pitch, _backup.yaw) : q_primary;
     _state.attitude_q.to_euler(_state.euler_rad.x, _state.euler_rad.y, _state.euler_rad.z);
     _state.attitude_source = _source;
+    _state.tilt_aiding = static_cast<uint8_t>(_tilt_aiding);
     _state.heading_rad = _state.euler_rad.z < 0.0f ? _state.euler_rad.z + 2.0f * PI_F : _state.euler_rad.z;
 
     // Earth-frame (NED) acceleration: rotate specific force and add gravity back.
@@ -202,6 +272,172 @@ void SensorFusion::update_attitude(float dt) {
     _state.linear_accel_ned = earth_accel;
 
     _state.attitude_valid = std::isfinite(_state.euler_rad.x) && std::isfinite(_state.euler_rad.y);
+}
+
+void SensorFusion::learn_gyro_bias() {
+    // Correction since the last tick = filter output vs. gyro-only propagation.
+    math::Quaternion dq = _attitude_filter.get_quaternion() * _q_pred.conjugate();
+    if (dq.q0 < 0.0f) dq = math::Quaternion(-dq.q0, -dq.q1, -dq.q2, -dq.q3);
+    const math::Vector3f phi_e(2.0f * dq.q1, 2.0f * dq.q2, 2.0f * dq.q3); // earth frame, rad
+    const math::Vector3f phi_b = _q_pred.conjugate().rotate_vector(phi_e);
+    if (!finite3(phi_b) || phi_b.length() > BIAS_LEARN_MAX_STEP) return;
+    // A gyro reading b too high makes every correction ~ -b*dt in the body frame.
+    _gyro_bias -= phi_b * BIAS_GAIN;
+    _gyro_bias.x = std::clamp(_gyro_bias.x, -BIAS_MAX_RAD_S, BIAS_MAX_RAD_S);
+    _gyro_bias.y = std::clamp(_gyro_bias.y, -BIAS_MAX_RAD_S, BIAS_MAX_RAD_S);
+    _gyro_bias.z = std::clamp(_gyro_bias.z, -BIAS_MAX_RAD_S, BIAS_MAX_RAD_S);
+}
+
+float SensorFusion::drag_velocity_from_accel(float f) const {
+    // Invert f = -(mcoef*v + k*|v|*v), k = rho / (2*bcoef), for one body axis.
+    const float a = std::fabs(f);
+    float v;
+    if (_drag_bcoef > 0.0f) {
+        const float k = 0.5f * 1.225f / _drag_bcoef;
+        v = (-_drag_mcoef + std::sqrt(_drag_mcoef * _drag_mcoef + 4.0f * k * a)) / (2.0f * k);
+    } else {
+        v = a / _drag_mcoef;
+    }
+    return f > 0.0f ? -v : v;
+}
+
+void SensorFusion::drag_observer(const math::Vector3f& gyro, const math::Vector3f& accel, bool apply_tilt, float dt) {
+    if (!finite3(accel) || dt <= 0.0f) return;
+    math::Quaternion q = _attitude_filter.get_quaternion();
+    // What the drag model reads off the accelerometer: body X/Y airspeed.
+    const math::Vector3f vm(drag_velocity_from_accel(accel.x), drag_velocity_from_accel(accel.y), 0.0f);
+    const float vz_meas = _state.altitude_valid ? -_state.vertical_velocity_m_s : 0.0f;
+
+    if (!_drag_active) {
+        // Start from the drag-measured velocity (just after take-off it's ~0 anyway).
+        _drag_vel = q.rotate_vector(vm);
+        _drag_vel.z = vz_meas;
+        _drag_innov = math::Vector3f(0, 0, 0);
+        _drag_vm_lp = vm;
+        _drag_lin_body = math::Vector3f(0, 0, 0);
+        _drag_active = true;
+        _drag_time_s = 0.0f;
+        for (auto& t : _cal) t.active = false;
+        _cal_clock = 0.0f;
+        return;
+    }
+
+    // Attitude-independent body acceleration from the drag model (for the backup and
+    // the selector): a_b = d(v_b)/dt + w x v_b, with body Z velocity taken as 0.
+    {
+        const float k = dt / (DRAG_INNOV_TAU_S + dt);
+        const math::Vector3f prev = _drag_vm_lp;
+        _drag_vm_lp += (vm - _drag_vm_lp) * k;
+        const math::Vector3f dv = (_drag_vm_lp - prev) / dt;
+        const math::Vector3f a(dv.x - gyro.z * _drag_vm_lp.y, dv.y + gyro.z * _drag_vm_lp.x, 0.0f);
+        _drag_lin_body += (a - _drag_lin_body) * (dt / (0.2f + dt));
+    }
+
+    // Accelerometer noise (vibration) from sample-to-sample differences: the motion of
+    // the vehicle barely changes between samples, noise does.
+    if (_have_prev_accel) {
+        const float dx = accel.x - _prev_accel.x, dy = accel.y - _prev_accel.y;
+        const float var = 0.25f * (dx * dx + dy * dy); // var(diff) = 2 var; two axes
+        _accel_noise_var += (var - _accel_noise_var) * std::min(1.0f, dt / 2.0f);
+    }
+    _prev_accel = accel;
+    _have_prev_accel = true;
+    const float noise = std::sqrt(_accel_noise_var);
+    const float gs = noise > DRAG_NOISE_REF ? std::max(DRAG_MIN_GAIN_SCALE, std::sqrt(DRAG_NOISE_REF / noise)) : 1.0f;
+
+    // Predict: integrate earth-frame specific force + gravity.
+    const math::Vector3f F = q.rotate_vector(accel);
+    _drag_vel += (F + math::Vector3f(0, 0, G)) * dt;
+
+    // Innovation in the body frame (drag only constrains body X/Y), low-passed.
+    const math::Vector3f vb = q.conjugate().rotate_vector(_drag_vel);
+    const math::Vector3f inn(vm.x - vb.x, vm.y - vb.y, 0.0f);
+    _drag_innov += (inn - _drag_innov) * (dt / (DRAG_INNOV_TAU_S + dt));
+    const math::Vector3f e = q.rotate_vector(_drag_innov);
+
+    _drag_time_s += dt;
+    if (_drag_cal_enabled && _drag_time_s > DRAG_SETTLE_S) drag_calibration(gyro, accel, dt);
+
+    const bool settling = _drag_time_s < DRAG_SETTLE_S;
+    _drag_vel += e * ((settling ? DRAG_SETTLE_VEL_GAIN : DRAG_VEL_GAIN * gs) * dt);
+    _drag_vel.z += (vz_meas - _drag_vel.z) * (DRAG_VEL_GAIN * dt);
+    if (!finite3(_drag_vel)) {
+        _drag_active = false;
+        return;
+    }
+
+    if (!apply_tilt || settling) return;
+    const float fn2 = F.length_squared();
+    if (fn2 < 0.09f * G * G || vb.length() > DRAG_MAX_AIRSPEED) return; // free fall / outside the model
+    // A tilt error d makes the integrated velocity drift at d x F: rotate against it.
+    math::Vector3f phi = F.cross(math::Vector3f(e.x, e.y, 0.0f)) * (DRAG_TILT_GAIN * gs * gs * dt / fn2);
+    if (_mag_in_use) phi.z = 0.0f; // heading belongs to the magnetometer
+    q = math::Quaternion(1.0f, 0.5f * phi.x, 0.5f * phi.y, 0.5f * phi.z) * q;
+    q.normalize();
+    if (std::isfinite(q.q0) && std::isfinite(q.q1) && std::isfinite(q.q2) && std::isfinite(q.q3)) {
+        _attitude_filter.set_quaternion(q);
+    }
+}
+
+void SensorFusion::drag_calibration(const math::Vector3f& gyro, const math::Vector3f& accel, float dt) {
+    // Full NED airspeed from the drag model (body X/Y, low-passed) plus the baro's
+    // vertical speed for the unknown body Z part; q is a given attitude.
+    const float vz = _state.altitude_valid ? -_state.vertical_velocity_m_s : 0.0f;
+    auto drag_vel_ned = [&](const math::Quaternion& q) {
+        const math::Vector3f h = q.rotate_vector(math::Vector3f(_drag_vm_lp.x, _drag_vm_lp.y, 0.0f));
+        const math::Vector3f z = q.rotate_vector(math::Vector3f(0, 0, 1));
+        const float vbz = z.z > 0.5f ? (vz - h.z) / z.z : 0.0f;
+        return h + z * vbz;
+    };
+    // Start a new window every WINDOW / TRACKS seconds, from the current primary attitude.
+    _cal_clock += dt;
+    const float stagger = DRAG_CAL_WINDOW_S / DRAG_CAL_TRACKS;
+    if (_cal_clock >= stagger) {
+        _cal_clock -= stagger;
+        for (auto& t : _cal) {
+            if (t.active) continue;
+            t.active = true;
+            t.t = 0.0f;
+            t.q = _attitude_filter.get_quaternion();
+            t.dv_int = math::Vector3f(0, 0, 0);
+            t.vm0 = drag_vel_ned(t.q);
+            t.a0 = t.q.rotate_vector(accel) + math::Vector3f(0, 0, G);
+            break;
+        }
+    }
+    for (auto& t : _cal) {
+        if (!t.active) continue;
+        if (gyro.length() > BIAS_LEARN_MAX_RATE) { t.active = false; continue; } // flips etc.: drop
+        t.q = propagate_gyro(t.q, gyro, dt);
+        t.dv_int += (t.q.rotate_vector(accel) + math::Vector3f(0, 0, G)) * dt;
+        t.t += dt;
+        if (t.t < DRAG_CAL_WINDOW_S) continue;
+        t.active = false;
+        // The low-passed drag airspeed lags by ~tau * acceleration: undo that, or
+        // windows that end mid-manoeuvre would bias the coefficient.
+        const math::Vector3f a1 = t.q.rotate_vector(accel) + math::Vector3f(0, 0, G);
+        const math::Vector3f dvm = drag_vel_ned(t.q) - t.vm0 + (a1 - t.a0) * DRAG_INNOV_TAU_S;
+        const math::Vector3f dvi(t.dv_int.x, t.dv_int.y, 0.0f);   // horizontal only
+        const float n2 = dvi.length_squared();
+        if (n2 < DRAG_CAL_MIN_DV * DRAG_CAL_MIN_DV || !finite3(dvm) || !finite3(dvi)) continue;
+        // drag airspeed = true airspeed * (true mcoef / assumed mcoef)
+        const float ratio = (dvm.x * dvi.x + dvm.y * dvi.y) / n2;
+        if (!(ratio > 0.5f && ratio < 2.0f)) continue; // gust, take-off, ...: not drag
+        const float c_old = _drag_mcoef;
+        _drag_mcoef = std::clamp(c_old * std::pow(ratio, DRAG_CAL_GAIN), DRAG_MCOEF_MIN, DRAG_MCOEF_MAX);
+        ++_drag_cal_windows;
+        // The drag airspeed just changed scale by c_old/c_new. Shift the observer and
+        // the other windows by the same amount, so the change is not an innovation
+        // (which would kick the tilt).
+        const float s = c_old / _drag_mcoef;
+        const math::Vector3f dvb((s - 1.0f) * _drag_vm_lp.x, (s - 1.0f) * _drag_vm_lp.y, 0.0f);
+        _drag_vel += _attitude_filter.get_quaternion().rotate_vector(dvb);
+        _drag_vm_lp.x *= s;
+        _drag_vm_lp.y *= s;
+        for (auto& o : _cal) {
+            if (o.active) o.vm0 = o.vm0 * s;
+        }
+    }
 }
 
 void SensorFusion::mag_heading_correction(const math::Vector3f& mag, float dt) {
@@ -334,8 +570,10 @@ void SensorFusion::update_position(float dt) {
     if (!gps_ok) {
         _state.position_valid = false;
         _gps_lin_accel = math::Vector3f(0, 0, 0);
+        _gps_lin_valid = false;
         return;
     }
+    _gps_lin_valid = true;
     const auto& d = gps->get_data();
     if (!_have_home) {
         _home_lat = d.latitude_deg;

@@ -33,6 +33,8 @@ struct VehicleState {
     bool altitude_valid{false};
     bool position_valid{false};
     uint8_t attitude_source{0};   // 0 = primary (Madgwick), 1 = backup (complementary)
+    uint8_t tilt_aiding{0};       // primary tilt reference: 0 = accelerometer, 1 = rotor-drag model, 2 = GPS
+    math::Vector3f gyro_bias{0.0f, 0.0f, 0.0f}; // online gyro bias estimate (rad/s), already removed
     uint32_t last_update_ms{0};
 };
 

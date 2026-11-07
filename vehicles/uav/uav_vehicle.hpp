@@ -49,6 +49,7 @@ public:
     void set_hover_throttle(float t) { _hover_throttle = std::clamp(t, 0.15f, 0.85f); }
     float get_target_altitude() const { return _target_altitude_m; }
     bool is_landed() const { return _landed; }
+    bool multirotor_in_air() const override { return is_armed() && !_landed; }
 
     /**
      * Optional rate-loop gyro filtering (both off by default):

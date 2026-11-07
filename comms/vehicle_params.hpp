@@ -16,6 +16,14 @@ namespace comms {
 void register_vehicle_params(ParamStore& store, vehicles::VehicleManager& vm);
 
 /**
+ * Copy values the flight code learned in flight into their parameters, so they are
+ * saved and used from the next boot. Today: the rotor-drag coefficient that the
+ * fusion calibrates in the air (EKF_DRAG_MCOEF). Only while disarmed, and only when
+ * it moved by more than 2 %. Call it from the main loop now and then (e.g. 1 Hz).
+ */
+void sync_learned_params(ParamStore& store, vehicles::VehicleManager& vm);
+
+/**
  * Flight modes, shared by every vehicle as MAVLink custom_mode 0..2:
  *   UAV  MANUAL / STABILIZE / ALT_HOLD
  *   UGV  MANUAL / HEADING_HOLD / SPEED_HOLD   (boat: same as UGV)

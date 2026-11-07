@@ -1,4 +1,5 @@
 #include "comms/vehicle_params.hpp"
+#include <cmath>
 
 namespace autopilot {
 namespace comms {
@@ -158,6 +159,47 @@ void register_vehicle_params(ParamStore& store, VehicleManager& vm) {
             return true;
         });
     }
+
+    // ---- attitude estimation (shared by every vehicle; drag model is multicopter-only) ----
+    fusion::SensorFusion* f = vm.get_fusion();
+    using SF = fusion::SensorFusion;
+    // Rotor (momentum) drag: body X/Y acceleration per m/s of airspeed. Learned in flight
+    // and written back here by sync_learned_params().
+    store.add("EKF_DRAG_MCOEF", T::FLOAT, f ? f->drag_mcoef() : SF::DRAG_MCOEF_DEFAULT, SF::DRAG_MCOEF_MIN,
+              SF::DRAG_MCOEF_MAX, [m](float v) {
+                  auto* fu = m->get_fusion();
+                  if (fu) fu->set_drag_model(v, fu->drag_bcoef());
+                  return true;
+              });
+    // Body ballistic coefficient, kg/m^2 (mass / (Cd * area)); 0 = no quadratic drag term.
+    store.add("EKF_DRAG_BCOEF", T::FLOAT, f ? f->drag_bcoef() : SF::DRAG_BCOEF_DEFAULT, 0.0f, 1000.0f, [m](float v) {
+        auto* fu = m->get_fusion();
+        if (fu) fu->set_drag_model(fu->drag_mcoef(), v);
+        return true;
+    });
+    store.add("EKF_DRAG_AID", T::INT32, 1.0f, 0.0f, 1.0f, [m](float v) {
+        if (auto* fu = m->get_fusion()) fu->set_drag_aiding_enabled(v > 0.5f);
+        return true;
+    });
+    store.add("EKF_DRAG_CAL", T::INT32, 1.0f, 0.0f, 1.0f, [m](float v) {
+        if (auto* fu = m->get_fusion()) fu->set_drag_calibration(v > 0.5f);
+        return true;
+    });
+    store.add("EKF_GBIAS_LEARN", T::INT32, 1.0f, 0.0f, 1.0f, [m](float v) {
+        if (auto* fu = m->get_fusion()) fu->set_gyro_bias_learning(v > 0.5f);
+        return true;
+    });
+}
+
+void sync_learned_params(ParamStore& store, vehicles::VehicleManager& vm) {
+    if (vm.is_armed()) return;   // settings are only committed while disarmed anyway
+    const auto* f = vm.get_fusion();
+    if (!f) return;
+    const int i = store.find("EKF_DRAG_MCOEF");
+    if (i < 0) return;
+    const float stored = store.value(static_cast<size_t>(i));
+    const float learned = f->drag_mcoef();
+    if (std::fabs(learned - stored) > 0.02f * stored) store.set(static_cast<size_t>(i), learned);
 }
 
 } // namespace comms

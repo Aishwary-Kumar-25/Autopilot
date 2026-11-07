@@ -31,6 +31,7 @@ mkdir build && cd build && cmake .. && make -j && ctest --output-on-failure
 
 - Madgwick is the primary attitude estimator. A complementary filter runs alongside it as a dissimilar backup, and a selector chooses between them.
 - GPS-aided attitude (commit 3, details in section 10). With GPS velocity, the primary estimator stops using the accelerometer as a gravity reference. It compares the change in GPS velocity with the integrated accelerometer over the same window instead. The backup filter still subtracts the GPS-derived acceleration from the accelerometer.
+- Without GPS, a flying multicopter now gets its tilt from a rotor-drag model, and the gyro bias is learned online (commit 8, at the end).
 - Madgwick's gain is high during alignment and drops to 0.03 in flight. The backup filter has a 4 s time constant. Multirotor accelerometers barely see sustained tilt, so higher gains dragged the estimate toward level. The SITL test measured this.
 
 ## 4. Architecture (commit 2)
@@ -131,8 +132,8 @@ Other changes:
 
 - Parameter storage (gains, battery threshold, board rotation) in flash.
 - ~~A MAVLink telemetry link to the GCS.~~ Done in commit 5 (see below and docs/MAVLINK_QGC.md).
-- An EKF that fuses GPS velocity and position and estimates gyro bias. The GPS tilt correction in section 10 has no integral term, so a gyro bias of b leaves a tilt error of about b / 1 s (0.6° for 0.01 rad/s).
-- Without GPS, the accelerometer still reads drag as tilt, so the estimate is wrong while a fast-moving quad slows down. A rotor-drag model would fix this.
+- An EKF that fuses GPS velocity and position. ~~It should also estimate gyro bias~~: done in commit 8 (online gyro bias).
+- ~~Without GPS, the accelerometer still reads drag as tilt. A rotor-drag model would fix this.~~ Done in commit 8.
 - A first build on real hardware: the STM32 code compiles only inside a CubeMX project, and nobody has built it there yet.
 
 ---
@@ -287,3 +288,107 @@ Seen but left for the tilt-without-GPS work: when the rover pulls away hard
 (2.5 m/s^2), the estimate briefly reads about 4 degrees nose-up until GPS-aided
 attitude takes over about half a second later. In steady turns the error stays
 under 1 degree.
+
+---
+
+# Commit 8: tilt without GPS (rotor-drag model) and online gyro bias
+
+**The problem.** Without GPS, attitude came from Madgwick, which treats the
+accelerometer as a gravity sensor. On a multirotor it isn't one: thrust is
+always along body Z, so in a held bank, a turn or while braking the
+accelerometer "looks level". In SITL a 15° bank held 4 s ended with a 13.6° error,
+and a dash followed by hard braking gave 16°. Separately, the GPS tilt correction
+had no integral term, so any gyro drift after the boot calibration stayed as a
+permanent tilt/heading error.
+
+**Rotor-drag aiding** (`fusion/ahrs_interface.cpp`, the idea PX4 and ArduPilot
+use in their EKFs as "drag fusion"). Because thrust is along body Z, the body X/Y
+specific force of a multirotor is only drag, and drag is a known function of
+airspeed: `f_xy = -mcoef*v - rho*|v|*v / (2*bcoef)`. So the accelerometer
+measures body X/Y airspeed. A velocity observer integrates the earth-frame
+specific force plus gravity and compares it, in the body frame, with that drag
+airspeed (vertical speed comes from the baro). A tilt error makes the integrated
+velocity drift sideways at g per radian, so the mismatch is turned into a tilt
+correction (`phi = K * (F x e) / |F|^2`, ~1 rad/s, damping 0.8). Heading stays
+with the magnetometer.
+- Used only for a multicopter in the air (`VehicleBase::multirotor_in_air()`, the
+  UAV says armed and not landed). On the ground, and for rover/boat/sub, Madgwick
+  runs as before. With GPS, GPS aiding has priority; the drag observer keeps
+  running in the background, so it takes over at once if GPS drops out (the
+  gyro-only coast is cut from 3 s to 1.5 s when drag aiding is available).
+- A constant wind cancels out (the model works on air-relative velocity).
+- At lift-off the airspeed jumps (the wind the ground was holding back), so for
+  the first 1.5 s the observer only corrects its velocity, not the tilt. Drag
+  aiding starts at lift-off, not 3 s after boot, because Madgwick reads the drag of
+  a wind-blown take-off as tilt (that alone gave 10° errors at take-off in 5 m/s wind).
+- Vibration: the drag airspeed is the accelerometer divided by mcoef (about 5x
+  the noise), so the fusion measures the accelerometer noise (sample-to-sample
+  differences) and slows the observer down on a vibrating frame.
+- The backup estimator and the selector's reference subtract an
+  attitude-independent manoeuvre acceleration from the drag model
+  (`d(v_drag)/dt + w x v_drag`), so they stay dissimilar from the primary and the
+  selector doesn't pick the backup just because the primary is now right.
+
+**In-flight drag calibration.** A wrong mcoef matters (2x off gave 6-9° errors), so
+the fusion learns it. Over a 2 s window the gyro alone keeps the attitude
+accurate, so integrating the specific force with a gyro-only copy of the attitude
+gives the true change in airspeed; the change in drag airspeed over the same
+window is (true / assumed mcoef) times that. Four staggered windows; only windows
+with a real speed change (> 3 m/s, i.e. pilot manoeuvres, not gusts) are used; the
+lag of the low-pass is compensated; and when the coefficient changes, the observer
+is shifted so the change doesn't kick the tilt. After landing,
+`comms::sync_learned_params()` writes the learned value to `EKF_DRAG_MCOEF`, which
+the saved settings (commit 6) keep for the next boot.
+
+**Online gyro bias.** Every correction the primary applies (accelerometer, mag,
+drag or GPS) is measured as the difference between the filter output and a
+gyro-only propagation, rotated into the body frame, and 0.1x of it goes into the
+bias, like the integral term of a Mahony filter. The bias is clamped to 0.1 rad/s,
+reset on IMU failover, and not learned during fast rotation, during the
+drag-observer settle time or while its innovation is large (a transient, not
+drift). The rate controller gets the corrected rate; the backup estimator keeps
+the raw gyro so a bad bias estimate can't take both estimators with it.
+
+**New parameters** (saved): `EKF_DRAG_MCOEF` (1/s, default 0.2, learned),
+`EKF_DRAG_BCOEF` (kg/m^2, default 100, 0 = off), `EKF_DRAG_AID`, `EKF_DRAG_CAL`,
+`EKF_GBIAS_LEARN` (0/1). `VehicleState` gains `tilt_aiding` (0 accel, 1 drag,
+2 GPS) and `gyro_bias`.
+
+**Simulator.** `QuadModel` gets wind, quadratic body drag (`drag_cda`); `SimIMU`
+gets a residual `gyro_bias` and adjustable `accel_noise`.
+
+**Results** (`tests/test_sitl_drag_bias.cpp`, no GPS, ALT_HOLD; worst tilt error):
+
+| Manoeuvre | accelerometer only | drag model |
+|---|---|---|
+| A. 15° bank held 4 s | 13.6° | 0.3° |
+| B. 12° pitch + yaw turn, 6 s | 4.8° | 0.2° |
+| E. 18° dash 4 s, then hard braking | 16.2° | 0.3° |
+
+| Condition (drag model, worst over A/B/E) | Result |
+|---|---|
+| 5.4 m/s steady wind | 0.3° (hover 0.03°) |
+| quadratic body drag in the sim | 0.4° |
+| gusts 3 ± 1 m/s | 4.2° (accelerometer only: 13.2°) |
+| white accel noise 1.5 m/s^2 rms (pessimistic vibration) | 1.0° (accelerometer only: 10.6°) |
+| mcoef 2x too low / too high, first flight | 8.8° / 6.0° (never worse than accel only) |
+| ... after one calibration flight (learned 0.210 / 0.200, true 0.208) | 0.3° / 0.7° |
+| 5.4 m/s wind + bluff drag + mcoef 1.5x, after calibration | 1.3° |
+
+Gyro bias (0.03, -0.025, 0.02 rad/s injected after the boot calibration): learned
+to (0.029, -0.024, 0.021) in 25 s of hover without GPS; worst tilt error in the
+following turn 0.2° (3.4° without learning), worst yaw error 0.9° (7.3°). With
+GPS the end-of-turn tilt error drops from 2.1° to 0.2°. On the ground, disarmed,
+it converges in 40 s.
+
+`test_sitl_gps_attitude` still runs its "no GPS" baseline with the drag model off
+(that test is about GPS aiding); with drag on, its no-GPS numbers drop from
+13.6°/4.8° to the table above, and its "GPS lost after 2 s" case from 6.7° to 1.0°.
+
+**Not covered / next.** Gusts are still the weak case (unmodelled airspeed
+changes); the coefficient needs one manoeuvring flight to learn (or set
+`EKF_DRAG_MCOEF` from a log). Rovers and boats don't get this (their sideways
+force isn't drag); for them a "no sideways / vertical velocity" constraint would
+fix the ~4° nose-up at hard launch seen in commit 7. On real hardware the
+accelerometer noise and mcoef should be checked from a log of the first flights.
+
