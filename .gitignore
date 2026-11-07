@@ -1,0 +1,17 @@
+# Build directories
+build/
+bin/
+lib/
+*.o
+*.a
+*.so
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+compile_commands.json
+
+# System files
+.DS_Store
