@@ -270,8 +270,8 @@ bool decode_esc_raw_command(const uint8_t* p, size_t len, int16_t* cmd, uint8_t&
     BitReader r(p, len);
     count = 0;
     while (r.remaining_bits() >= 14 && count < 20) {
-        int64_t v;
-        r.read_i(14, v);
+        int64_t v = 0;
+        if (!r.read_i(14, v)) break;
         cmd[count++] = static_cast<int16_t>(v);
     }
     return true;

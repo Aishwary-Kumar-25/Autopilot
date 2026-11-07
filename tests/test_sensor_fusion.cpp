@@ -90,7 +90,9 @@ int main() {
     mock_imu->set_data(math::Vector3f(0.0f, -9.80665f * std::sin(roll_rad), -9.80665f * std::cos(roll_rad)),
                        math::Vector3f(0.0f, 0.0f, 0.0f));
 
-    for (int i = 0; i < 500; ++i) {
+    // The jump in accel with zero gyro is physically inconsistent, so the filter
+    // only follows at its (deliberately low, in-flight) accel-correction rate.
+    for (int i = 0; i < 2500; ++i) {
         fusion.update(0.01f);
     }
 
@@ -113,7 +115,7 @@ int main() {
     // means the accelerometer reads (0,0,-(g+2)); the estimator must see +2 m/s^2 UP.
     std::cout << "\n[Step 4] Testing vertical acceleration sign...\n";
     mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -9.80665f), math::Vector3f(0.0f, 0.0f, 0.0f));
-    for (int i = 0; i < 500; ++i) fusion.update(0.01f);
+    for (int i = 0; i < 2500; ++i) fusion.update(0.01f);
     mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -(9.80665f + 2.0f)), math::Vector3f(0.0f, 0.0f, 0.0f));
     fusion.update(0.01f);
     CHECK_NEAR(-fusion.get_state().linear_accel_ned.z, 2.0, 0.05);

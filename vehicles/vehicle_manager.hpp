@@ -52,6 +52,8 @@ public:
     VehicleType get_active_type() const { return _active_type; }
     const char* get_active_type_name() const;
 
+    void set_battery_voltage(float v);
+
     // User input command routing
     void set_user_inputs(float roll, float pitch, float yaw, float throttle, float forward = 0.0f, float lateral = 0.0f);
 
@@ -77,7 +79,7 @@ public:
     hal::HAL* get_hal() { return _hal; }
     drivers::SensorManager* get_sensors() { return _sensors.get(); }
     fusion::SensorFusion* get_fusion() { return _fusion.get(); }
-    control::ArmingHandler* get_arming() { return _arming.get(); }
+    control::ArmingHandler* get_arming() { return _active_vehicle ? _active_vehicle->get_arming() : nullptr; }
     VehicleBase* get_active_vehicle() { return _active_vehicle.get(); }
     const fusion::VehicleState& get_latest_state() const { return _fusion->get_state(); }
 
@@ -89,10 +91,12 @@ private:
     hal::HAL* _hal{nullptr};
     VehicleType _active_type;
 
-    // Shared flight stack core
+    // Shared flight stack core: ONE sensor manager + estimator for every vehicle
+    // profile (vehicles get it via attach_shared_stack; switching profile keeps
+    // the estimator converged and the discovered sensors).
     std::unique_ptr<drivers::SensorManager> _sensors;
     std::unique_ptr<fusion::SensorFusion> _fusion;
-    std::unique_ptr<control::ArmingHandler> _arming;
+    bool _initialized{false};
 
     // Pub/Sub Message Topics
     system::Topic<fusion::VehicleState> _state_topic;
@@ -102,9 +106,9 @@ private:
     typename system::Topic<fusion::VehicleState>::Subscriber _controller_state_sub;
     typename system::Topic<control::ControlDemands>::Subscriber _mixer_demands_sub;
 
-    // Active vehicle controller & mixer
+    // Active vehicle (owns its controller, failsafe, arming and mixer)
     std::unique_ptr<VehicleBase> _active_vehicle;
-    std::unique_ptr<control::VehicleMixer> _active_mixer;
+    float _battery_voltage{-1.0f};
 
     void instantiate_vehicle(VehicleType type);
 };

@@ -42,6 +42,7 @@ set(CORE_SOURCES
     fusion/complementary.cpp
     fusion/ahrs_interface.cpp
     control/arming_handler.cpp
+    control/failsafe.cpp
     control/actuator_matrix_mixer.cpp
     vehicles/vehicle_base.cpp
     vehicles/uav/uav_vehicle.cpp
@@ -115,4 +116,13 @@ if(BUILD_TESTS)
     add_executable(test_dronecan tests/test_dronecan.cpp)
     target_link_libraries(test_dronecan PRIVATE autopilot_core pthread)
     add_test(NAME test_dronecan COMMAND test_dronecan)
+
+    add_executable(test_failsafe tests/test_failsafe.cpp)
+    target_link_libraries(test_failsafe PRIVATE autopilot_core pthread)
+    add_test(NAME test_failsafe COMMAND test_failsafe)
+
+    # Closed-loop software-in-the-loop flight (sim/quad_sim.hpp)
+    add_executable(test_sitl_flight tests/test_sitl_flight.cpp)
+    target_link_libraries(test_sitl_flight PRIVATE autopilot_core pthread)
+    add_test(NAME test_sitl_flight COMMAND test_sitl_flight)
 endif()

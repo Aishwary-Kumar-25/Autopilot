@@ -2,13 +2,16 @@
 
 A high-reliability, modular autopilot designed from scratch for **UAVs (Multirotors)**, **UGVs (Ground Vehicles)**, and **ROVs (Underwater Submarines)** running on the **STM32** processor family.
 
+> **`darsh` branch:** bug fixes, failsafe and a closed-loop SITL flight test on top of `AK`.
+> See [docs/DARSH_BRANCH_CHANGES.md](docs/DARSH_BRANCH_CHANGES.md).
+
 ---
 
 ## Key Features
 
 1. **CAN Bus (DroneCAN) & Swappable Sensors**:
    - Replaces noisy, lockup-prone I2C with **DroneCAN (CAN 2.0B differential signaling)** as the primary external sensor bus, eliminating I2C bus lockup vulnerabilities.
-   - Dynamic auto-discovery detects connected CAN sensor nodes (`RawIMU`, `StaticPressure`, `MagneticFieldStrength`, `Fix`) and I2C/SPI sensors on boot or during runtime.
+   - Dynamic auto-discovery detects connected CAN sensor nodes (`RawIMU`, `StaticPressure`, `MagneticFieldStrength`, `Fix2`) and I2C/SPI sensors on boot or during runtime.
    - Continuous health monitoring detects sensor failures and supports **live field hot-swapping** without rebooting the flight controller.
 
 2. **Zero-Allocation Pub/Sub Middleware**:

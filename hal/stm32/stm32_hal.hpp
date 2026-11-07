@@ -3,6 +3,17 @@
 #include "hal/hal.hpp"
 #include "stm32_pwm.hpp"
 
+/*
+ * Build modes
+ *  - On target (STM32CubeMX project, USE_HAL_DRIVER defined): every method calls
+ *    the ST HAL. CAN uses bxCAN (HAL_CAN_MODULE_ENABLED, F1/F4/F7) or FDCAN
+ *    (HAL_FDCAN_MODULE_ENABLED, G4/H7). RX for CAN and UART is interrupt driven:
+ *    call on_rx_isr()/on_rx_byte_isr() from the corresponding HAL callback.
+ *  - Off target (host build): there is no hardware, so every bus call FAILS
+ *    (returns false / 0). Returning "success" from an empty stub made the sensor
+ *    manager believe sensors were present and healthy.
+ */
+
 namespace autopilot {
 namespace hal {
 
@@ -52,8 +63,17 @@ public:
     bool receive_frame(CANFrame& frame) override;
     size_t available() override;
 
+    /** Push a received frame (call from the CAN RX FIFO interrupt callback). */
+    void on_rx_isr(const CANFrame& frame);
+    uint32_t rx_overruns() const { return _rx_overruns; }
+
 private:
     void* _hcan{nullptr};
+    static constexpr uint16_t RX_SIZE = 64;   // power of two
+    CANFrame _rx[RX_SIZE];
+    volatile uint16_t _rx_head{0};   // written by ISR
+    volatile uint16_t _rx_tail{0};   // written by main loop
+    uint32_t _rx_overruns{0};
 };
 
 /**
@@ -68,8 +88,18 @@ public:
     size_t read(uint8_t* buffer, size_t max_len) override;
     size_t available() override;
 
+    /** Push a received byte (call from HAL_UART_RxCpltCallback / IDLE+DMA handler). */
+    void on_rx_byte_isr(uint8_t byte);
+    /** Arms single-byte interrupt reception (call once after init, and from the RX callback). */
+    void restart_rx_it();
+
 private:
     void* _huart{nullptr};
+    static constexpr uint16_t RX_SIZE = 512;  // power of two: ~100 ms of GPS at 38400 baud
+    uint8_t _rx[RX_SIZE]{};
+    volatile uint16_t _rx_head{0};
+    volatile uint16_t _rx_tail{0};
+    uint8_t _it_byte{0};
 };
 
 /**

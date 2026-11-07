@@ -31,6 +31,7 @@ void ComplementaryAttitude::update(const math::Vector3f& g, const math::Vector3f
     pitch += (cr * g.y - sr * g.z) * dt;
     yaw += (sr / cp * g.y + cr / cp * g.z) * dt;
 
+    const float alpha = tau_s > 0.0f ? tau_s / (tau_s + dt) : 0.0f;
     const float an = a.length();
     if (an > 0.5f * G && an < 1.5f * G) {
         float ra, pa;
@@ -98,7 +99,7 @@ void SensorFusion::update_attitude(float dt) {
     if (!_aligned) {
         if (accel.length() < 0.5f * G) return;
         ComplementaryAttitude init;
-        init.alpha = 0.0f;
+        init.tau_s = 0.0f;
         init.update(math::Vector3f(0, 0, 0), accel, use_mag ? &mag : nullptr, 0.0f);
         _attitude_filter.set_quaternion(math::Quaternion::from_euler(init.roll, init.pitch, init.yaw));
         _backup.roll = init.roll;
@@ -106,7 +107,11 @@ void SensorFusion::update_attitude(float dt) {
         _backup.yaw = init.yaw;
         ComplementaryAttitude::tilt_from_accel(accel, _acc_roll_lp, _acc_pitch_lp);
         _aligned = true;
+        _time_since_align = 0.0f;
+        _attitude_filter.set_beta(BETA_ALIGN);
     }
+    _time_since_align += dt;
+    if (_time_since_align > ALIGN_SETTLE_S) _attitude_filter.set_beta(BETA_FLIGHT);
 
     // Remove manoeuvre acceleration (from GPS velocity) so accel is a pure gravity reference.
     const math::Vector3f lin_body = _attitude_filter.get_quaternion().conjugate().rotate_vector(_gps_lin_accel);

@@ -48,6 +48,7 @@ int main() {
 
     // Arming
     std::string err;
+    uav.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(uav.arm(err));
     CHECK(uav.is_armed());
     std::cout << "  -> Pre-arm checks and Arming [PASSED]\n";
@@ -76,6 +77,7 @@ int main() {
 
     vehicles::UGVVehicle ugv(&hal_ugv, vehicles::UGVSteeringType::ACKERMANN);
     CHECK(ugv.init());
+    ugv.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(ugv.arm(err));
 
     // Forward command 0.5 -> Throttle ESC (CH1) should be > 1500us
@@ -95,6 +97,7 @@ int main() {
 
     vehicles::ROVVehicle rov6(&hal_rov6, 6);
     CHECK(rov6.init());
+    rov6.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(rov6.arm(err));
     CHECK(rov6.get_thruster_count() == 6);
 
@@ -124,6 +127,7 @@ int main() {
 
     vehicles::ROVVehicle rov8(&hal_rov8, 8);
     CHECK(rov8.init());
+    rov8.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(rov8.arm(err));
     CHECK(rov8.get_thruster_count() == 8);
     rov8.set_mode(vehicles::ROVMode::MANUAL); // Pure mixing verification
@@ -180,6 +184,7 @@ int main() {
 
     vehicles::ROVVehicle rov3(&hal_rov3, 3);
     CHECK(rov3.init());
+    rov3.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(rov3.arm(err));
     CHECK(rov3.get_thruster_count() == 3);
 
@@ -241,6 +246,7 @@ int main() {
     std::cout << "\n[3G] Testing UAV Rotor Count Scaling (4 -> 6 -> 8 -> 12 Rotors)...\n";
     CHECK(vm.configure_uav_rotors(6));
     CHECK(vm.get_active_actuator_count() == 6);
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     CHECK(vm.arm(err));
 
     vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f);

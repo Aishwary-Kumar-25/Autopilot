@@ -6,6 +6,17 @@
 
 using namespace autopilot;
 
+// Real MEMS sensors always have a few LSBs of noise. A register that never
+// changes is what a hung sensor looks like, and the sensor manager's "stuck"
+// check (correctly) fails it, so the demo dithers the low bytes.
+static void sensor_noise(hal::PosixHAL& hal) {
+    static uint32_t seed = 12345;
+    auto next = [&]() { seed = seed * 1103515245u + 12345u; return static_cast<uint8_t>((seed >> 16) & 0x07); };
+    for (uint8_t reg : {0x3C, 0x3E, 0x40, 0x44, 0x46, 0x48}) {
+        hal.i2c().set_register(0x68, reg, next());
+    }
+}
+
 int main(int argc, char** argv) {
     std::cout << "========================================================\n";
     std::cout << "        E-CLUB MODULAR PLUG-AND-PLAY AUTOPILOT         \n";
@@ -45,10 +56,12 @@ int main(int argc, char** argv) {
     // Profile 1: UAV Multicopter
     std::cout << "\n[Profile 1] Active Vehicle: " << vm.get_active_type_name() << "\n";
     std::string err;
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     if (vm.arm(err)) {
         std::cout << "  -> Armed UAV successfully! Running Quad-X flight loop...\n";
         for (int i = 0; i < 20; ++i) {
             vm.set_user_inputs(0.1f, 0.0f, 0.0f, 0.5f); // 50% hover throttle, slight roll
+            sensor_noise(hal);
             vm.step(0.01f);
             hal.time().delay_ms(10);
         }
@@ -61,10 +74,12 @@ int main(int argc, char** argv) {
     std::string switch_reason;
     vm.switch_vehicle(vehicles::VehicleType::UGV_GROUND_ROVER, switch_reason);
     std::cout << "[Profile 2] Active Vehicle: " << vm.get_active_type_name() << "\n";
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     if (vm.arm(err)) {
         std::cout << "  -> Armed UGV successfully! Running Ackermann ground drive loop...\n";
         for (int i = 0; i < 20; ++i) {
             vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.6f, 0.6f); // 60% forward speed
+            sensor_noise(hal);
             vm.step(0.01f);
             hal.time().delay_ms(10);
         }
@@ -76,10 +91,12 @@ int main(int argc, char** argv) {
     std::cout << "\n>>> DYNAMIC PROFILE SWITCH: Converting to ROV Submarine <<<\n";
     vm.switch_vehicle(vehicles::VehicleType::ROV_SUBMARINE, switch_reason);
     std::cout << "[Profile 3] Active Vehicle: " << vm.get_active_type_name() << "\n";
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     if (vm.arm(err)) {
         std::cout << "  -> Armed ROV successfully! Running standard 6-DOF vectored thruster loop...\n";
         for (int i = 0; i < 20; ++i) {
             vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.4f, 0.5f, 0.0f); // Surge forward + vertical dive
+            sensor_noise(hal);
             vm.step(0.01f);
             hal.time().delay_ms(10);
         }
@@ -94,10 +111,12 @@ int main(int argc, char** argv) {
     vm.configure_rov_thrusters(8);
     std::cout << "  -> Reconfigured Active Vehicle: " << vm.get_active_type_name() << "\n";
     std::cout << "  -> Active Thruster Channels: " << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     if (vm.arm(err)) {
         std::cout << "  -> Armed 8-Thruster AUV! Running pitch-up + forward surge maneuver...\n";
         vm.set_user_inputs(0.0f, 0.4f, 0.0f, 0.0f, 0.5f, 0.0f); // Pitch up + surge forward
         for (int i = 0; i < 20; ++i) {
+            sensor_noise(hal);
             vm.step(0.01f);
             hal.time().delay_ms(10);
         }
@@ -112,9 +131,11 @@ int main(int argc, char** argv) {
     vm.configure_rov_thrusters(3);
     std::cout << "  -> Reconfigured Active Vehicle: " << vm.get_active_type_name() << "\n";
     std::cout << "  -> Active Thruster Channels: " << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f); // RC link up (required to arm)
     if (vm.arm(err)) {
         vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f, 0.5f, 0.0f); // Forward surge + climb heave
         for (int i = 0; i < 20; ++i) {
+            sensor_noise(hal);
             vm.step(0.01f);
             hal.time().delay_ms(10);
         }

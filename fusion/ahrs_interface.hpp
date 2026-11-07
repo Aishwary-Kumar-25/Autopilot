@@ -15,7 +15,10 @@ namespace fusion {
  */
 struct ComplementaryAttitude {
     float roll{0.0f}, pitch{0.0f}, yaw{0.0f};
-    float alpha{0.995f}; // gyro weight per step
+    // Accel/mag correction time constant. A multirotor's accelerometer barely sees
+    // tilt during sustained manoeuvres (thrust is always along body Z), so a short
+    // time constant drags the estimate toward level. 0 = snap to the accel/mag.
+    float tau_s{4.0f};
     void update(const math::Vector3f& gyro, const math::Vector3f& accel, const math::Vector3f* mag, float dt);
     static void tilt_from_accel(const math::Vector3f& accel, float& roll, float& pitch);
 };
@@ -39,6 +42,11 @@ class SensorFusion {
 public:
     static constexpr float SWITCH_DEG = 20.0f;
     static constexpr float SWITCH_TIME_S = 0.5f;
+    // Madgwick gain: high right after alignment for fast convergence, then low so
+    // sustained manoeuvre accelerations don't pull the attitude toward level.
+    static constexpr float BETA_ALIGN = 0.1f;
+    static constexpr float BETA_FLIGHT = 0.03f;
+    static constexpr float ALIGN_SETTLE_S = 3.0f;
 
     SensorFusion(drivers::SensorManager* sensor_manager);
 
@@ -70,6 +78,7 @@ private:
     uint32_t _last_gps_ms{0};
     math::Vector3f _prev_gps_vel{0, 0, 0};
     math::Vector3f _gps_lin_accel{0, 0, 0};
+    float _time_since_align{0.0f};
 
     // Baro reference
     bool _baro_ref_set{false};

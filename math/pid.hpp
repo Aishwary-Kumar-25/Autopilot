@@ -13,7 +13,8 @@ public:
         float ki{0.0f};
         float kd{0.0f};
         float kff{0.0f};
-        float imax{0.0f};       // Max absolute integrator contribution
+        float imax{0.0f};       // Max absolute integrator contribution. 0 disables the I term
+                                // (a bound is mandatory: an unbounded integrator is a flyaway).
         float out_min{-1.0f};   // Min overall output
         float out_max{1.0f};    // Max overall output
         float d_filter_hz{30.0f}; // Cutoff frequency for D-term derivative filter
@@ -37,15 +38,21 @@ public:
 
     void reset() {
         _integrator = 0.0f;
+        _last_output = 0.0f;
         _last_derivative = 0.0f;
         _last_error = 0.0f;
         _last_target = 0.0f;
+        _last_measurement = 0.0f;
         _has_run = false;
     }
 
-    float update(float target, float measurement, float dt) {
+    /**
+     * @param integrate  false freezes the integrator (e.g. on the ground, or while
+     *                   a downstream stage is saturated).
+     */
+    float update(float target, float measurement, float dt, bool integrate = true) {
         if (dt <= 1e-6f) {
-            return 0.0f;
+            return _last_output;
         }
 
         float error = target - measurement;
@@ -53,16 +60,11 @@ public:
         // Proportional term
         float p_term = _config.kp * error;
 
-        // Integral term with anti-windup
-        _integrator += _config.ki * error * dt;
-        if (_config.imax > 0.0f) {
-            _integrator = std::clamp(_integrator, -_config.imax, _config.imax);
-        }
-
-        // Derivative term calculated on measurement or error to prevent derivative kick
+        // Derivative on measurement: a step in the setpoint (stick flick, new
+        // altitude target) must not produce a derivative kick.
         float derivative = 0.0f;
         if (_has_run) {
-            float raw_derivative = (error - _last_error) / dt;
+            float raw_derivative = -(measurement - _last_measurement) / dt;
             // First order low pass filter on D-term
             if (_config.d_filter_hz > 0.0f) {
                 float rc = 1.0f / (2.0f * static_cast<float>(M_PI) * _config.d_filter_hz);
@@ -75,13 +77,31 @@ public:
         _last_derivative = derivative;
         _last_error = error;
         _last_target = target;
+        _last_measurement = measurement;
         _has_run = true;
 
         float d_term = _config.kd * derivative;
         float ff_term = _config.kff * target;
 
+        // Integral with clamping + conditional anti-windup: don't integrate further
+        // into a saturated output.
+        if (_config.imax > 0.0f && _config.ki != 0.0f) {
+            if (integrate) {
+                const float unsat = p_term + _integrator + d_term + ff_term;
+                const bool pushing_high = unsat >= _config.out_max && error > 0.0f;
+                const bool pushing_low = unsat <= _config.out_min && error < 0.0f;
+                if (!pushing_high && !pushing_low) {
+                    _integrator += _config.ki * error * dt;
+                }
+            }
+            _integrator = std::clamp(_integrator, -_config.imax, _config.imax);
+        } else {
+            _integrator = 0.0f;
+        }
+
         float output = p_term + _integrator + d_term + ff_term;
-        return std::clamp(output, _config.out_min, _config.out_max);
+        _last_output = std::clamp(output, _config.out_min, _config.out_max);
+        return _last_output;
     }
 
     float get_integrator() const { return _integrator; }
@@ -93,6 +113,8 @@ private:
     float _last_derivative{0.0f};
     float _last_error{0.0f};
     float _last_target{0.0f};
+    float _last_measurement{0.0f};
+    float _last_output{0.0f};
     bool _has_run{false};
 };
 

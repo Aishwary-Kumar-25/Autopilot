@@ -8,7 +8,6 @@ VehicleManager::VehicleManager(hal::HAL* hal, VehicleType initial_type)
       _active_type(initial_type),
       _sensors(std::make_unique<drivers::SensorManager>(hal)),
       _fusion(std::make_unique<fusion::SensorFusion>(_sensors.get())),
-      _arming(std::make_unique<control::ArmingHandler>(_sensors.get())),
       _controller_state_sub(_state_topic.subscribe()),
       _mixer_demands_sub(_demands_topic.subscribe()) {
     instantiate_vehicle(initial_type);
@@ -16,24 +15,32 @@ VehicleManager::VehicleManager(hal::HAL* hal, VehicleType initial_type)
 
 void VehicleManager::instantiate_vehicle(VehicleType type) {
     _active_type = type;
+    std::unique_ptr<VehicleBase> previous = std::move(_active_vehicle);
     switch (type) {
         case VehicleType::UGV_GROUND_ROVER:
             _active_vehicle = std::make_unique<UGVVehicle>(_hal);
-            _active_mixer = std::make_unique<UGVMixer>(UGVSteeringType::ACKERMANN);
             break;
         case VehicleType::ROV_SUBMARINE:
             _active_vehicle = std::make_unique<ROVVehicle>(_hal);
-            _active_mixer = std::make_unique<ROVThrusterMixer>();
             break;
         case VehicleType::UAV_MULTICOPTER:
         default:
             _active_vehicle = std::make_unique<UAVVehicle>(_hal);
-            _active_mixer = std::make_unique<UAVQuadMixer>();
             break;
     }
     if (_active_vehicle) {
-        _active_vehicle->init();
+        _active_vehicle->attach_shared_stack(_sensors.get(), _fusion.get());
+        _active_vehicle->set_battery_voltage(_battery_voltage);
+        if (previous) _active_vehicle->inherit_rc_link(*previous);
+        if (_initialized) {
+            _active_vehicle->init();
+        }
     }
+}
+
+void VehicleManager::set_battery_voltage(float v) {
+    _battery_voltage = v;
+    if (_active_vehicle) _active_vehicle->set_battery_voltage(v);
 }
 
 bool VehicleManager::init() {
@@ -46,12 +53,9 @@ bool VehicleManager::init() {
     _sensors->auto_discover_sensors();
     _fusion->reset();
 
-    if (auto* pwm = _hal->get_pwm()) {
-        pwm->init(400); // 400Hz default update rate
-        pwm->enable_output(false);
-    }
-
-    return true;
+    _initialized = true;
+    // Vehicle init only sets up its PWM outputs (the stack is shared).
+    return _active_vehicle ? _active_vehicle->init() : true;
 }
 
 bool VehicleManager::switch_vehicle(VehicleType new_type, std::string& reason) {
@@ -119,31 +123,23 @@ uint8_t VehicleManager::get_active_actuator_count() const {
 }
 
 bool VehicleManager::arm(std::string& failure_reason) {
-    if (_arming->arm(failure_reason)) {
-        if (_active_vehicle) {
-            std::string sub_err;
-            _active_vehicle->arm(sub_err);
-        }
-        if (auto* pwm = _hal->get_pwm()) {
-            pwm->enable_output(true);
-        }
-        return true;
+    // Single source of truth: the active vehicle's arming handler (one prearm
+    // check, one armed flag, failsafe reset and PWM enable in one place).
+    if (!_active_vehicle) {
+        failure_reason = "No active vehicle";
+        return false;
     }
-    return false;
+    return _active_vehicle->arm(failure_reason);
 }
 
 void VehicleManager::disarm() {
-    _arming->disarm();
     if (_active_vehicle) {
         _active_vehicle->disarm();
-    }
-    if (auto* pwm = _hal->get_pwm()) {
-        pwm->enable_output(false);
     }
 }
 
 bool VehicleManager::is_armed() const {
-    return _arming->is_armed();
+    return _active_vehicle && _active_vehicle->is_armed();
 }
 
 void VehicleManager::step(float dt) {
@@ -157,20 +153,12 @@ void VehicleManager::step(float dt) {
     // 3. Publish fresh state to Pub/Sub middleware
     _state_topic.publish(_fusion->get_state());
 
-    // 4. Controller consumes state from Pub/Sub topic and runs vehicle dynamics
-    fusion::VehicleState current_state;
-    _controller_state_sub.copy(current_state);
-
+    // 4. Vehicle runs controller + failsafe + mixer on the shared state
     if (_active_vehicle) {
         _active_vehicle->step(dt);
-        // Extract demands from vehicle and publish to demands topic
-        _demands_topic.publish(_active_vehicle->get_state().attitude_valid ?
-            control::ControlDemands{0,0,0,0,0,0} : control::ControlDemands{0,0,0,0,0,0});
+        // 5. Publish the demands actually sent to the mixer (telemetry / logging)
+        _demands_topic.publish(_active_vehicle->get_demands());
     }
-
-    // 5. Mixer consumes demands and drives hardware PWM pins
-    control::ControlDemands current_demands;
-    _mixer_demands_sub.copy(current_demands);
 }
 
 } // namespace vehicles

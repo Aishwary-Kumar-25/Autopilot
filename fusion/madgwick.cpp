@@ -108,7 +108,6 @@ void MadgwickFilter::update_9dof(const math::Vector3f& gyro, const math::Vector3
         float _2q0mx = 2.0f * q0 * mx;
         float _2q0my = 2.0f * q0 * my;
         float _2q0mz = 2.0f * q0 * mz;
-        float _2q1mx = 2.0f * q1 * mx;
 
         float hx = mx * q0 * q0 - _2q0my * q3 + _2q0mz * q2 + mx * q1 * q1 + 2.0f * q1 * my * q2 + 2.0f * q1 * mz * q3 - mx * q2 * q2 - mx * q3 * q3;
         float hy = _2q0mx * q3 + my * q0 * q0 - _2q0mz * q1 + 2.0f * q1 * mx * q2 - my * q1 * q1 + my * q2 * q2 + 2.0f * q2 * mz * q3 - my * q3 * q3;
