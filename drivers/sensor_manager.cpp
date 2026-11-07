@@ -138,6 +138,10 @@ void SensorManager::evaluate(Monitor& m, uint32_t now_ms) {
             if (!std::isfinite(b->get_altitude_m()) || b->get_pressure_pa() < 10000.0f || b->get_pressure_pa() > 120000.0f) {
                 v = SensorHealth::FAILED;
             }
+        } else if (s->type() == SensorType::GPS) {
+            // A receiver that is alive but has no 3D fix (or has never sent a sentence)
+            // can't be used. DEGRADED lets a second GPS that does have a fix take over.
+            if (!static_cast<GPSSensor*>(s)->has_3d_fix()) v = SensorHealth::DEGRADED;
         }
     }
 

@@ -248,5 +248,66 @@ private:
     float _heading{0.0f};
 };
 
+/**
+ * GPS receiver with NED velocity (like a u-blox over DroneCAN Fix2): 10 Hz, with
+ * a fixed output latency (real receivers report ~50-200 ms late) and noise.
+ */
+class SimGPS : public drivers::GPSSensor {
+public:
+    static constexpr double HOME_LAT = 26.5123, HOME_LON = 80.2329; // arbitrary
+    uint32_t period_ms = 100;
+    uint32_t latency_ms = 100;
+    double vel_noise = 0.05, pos_noise = 0.3;
+
+    explicit SimGPS(SimContext* ctx) : _ctx(ctx) { _health = drivers::SensorHealth::HEALTHY; }
+    const char* name() const override { return "SIM_GPS"; }
+    bool init() override { return true; }
+    void set_fault(Fault f) { _fault = f; }
+
+    bool update() override {
+        if (_fault == Fault::DROPOUT) return false;
+        const uint32_t now = _ctx->time->millis();
+        // Truth history, sampled every call, to emulate output latency.
+        _hist[_head] = {now, _ctx->model->pos, _ctx->model->vel};
+        _head = (_head + 1) % HIST;
+        if (_sample_count > 0 && now - _last_ms < period_ms) return true;
+        _last_ms = now;
+        // Newest truth sample that is at least latency_ms old.
+        const Snap* s = nullptr;
+        for (const Snap& h : _hist) {
+            if (h.t_ms != 0 && now - h.t_ms >= latency_ms && (!s || h.t_ms > s->t_ms)) s = &h;
+        }
+        if (!s) return true;
+        const double R = 6378137.0, d2r = 3.14159265358979323846 / 180.0;
+        _data.has_fix = true;
+        _data.fix_type = 3;
+        _data.satellites = 14;
+        _data.latitude_deg = HOME_LAT + (s->pos.x + _ctx->noise(pos_noise)) / R / d2r;
+        _data.longitude_deg = HOME_LON + (s->pos.y + _ctx->noise(pos_noise)) / (R * std::cos(HOME_LAT * d2r)) / d2r;
+        _data.altitude_msl_m = float(120.0 - s->pos.z);
+        _data.velocity_ned = math::Vector3f(float(s->vel.x + _ctx->noise(vel_noise)),
+                                            float(s->vel.y + _ctx->noise(vel_noise)),
+                                            float(s->vel.z + _ctx->noise(vel_noise)));
+        _data.has_velocity_ned = true;
+        _data.speed_m_s = std::sqrt(_data.velocity_ned.x * _data.velocity_ned.x +
+                                    _data.velocity_ned.y * _data.velocity_ned.y);
+        _data.timestamp_ms = now;
+        record_success(now);
+        return true;
+    }
+    const drivers::GPSData& get_data() const override { return _data; }
+    bool has_3d_fix() const override { return _data.fix_type >= 3; }
+
+private:
+    struct Snap { uint32_t t_ms{0}; V3 pos, vel; };
+    static constexpr int HIST = 128;
+    SimContext* _ctx;
+    Fault _fault{Fault::NONE};
+    Snap _hist[HIST]{};
+    int _head{0};
+    uint32_t _last_ms{0};
+    drivers::GPSData _data;
+};
+
 } // namespace sim
 } // namespace autopilot

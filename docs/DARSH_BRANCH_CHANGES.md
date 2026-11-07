@@ -30,7 +30,7 @@ mkdir build && cd build && cmake .. && make -j && ctest --output-on-failure
 ## 3. Estimation (commits 1 and 2)
 
 - Madgwick is the primary attitude estimator. A complementary filter runs alongside it as a dissimilar backup, and a selector chooses between them.
-- When GPS is available, its acceleration is subtracted from the accelerometer before the accelerometer is used as a gravity reference.
+- GPS-aided attitude (commit 3, details in section 10). With GPS velocity, the primary estimator stops using the accelerometer as a gravity reference. It compares the change in GPS velocity with the integrated accelerometer over the same window instead. The backup filter still subtracts the GPS-derived acceleration from the accelerometer.
 - Madgwick's gain is high during alignment and drops to 0.03 in flight. The backup filter has a 4 s time constant. Multirotor accelerometers barely see sustained tilt, so higher gains dragged the estimate toward level. The SITL test measured this.
 
 ## 4. Architecture (commit 2)
@@ -78,7 +78,7 @@ The test flies a 6-DOF model of a 1.2 kg quad (motor lag, drag, ground contact).
 |---|---|
 | Arm at mid stick in ALT_HOLD | Stays on the ground. |
 | Climb on stick, then hold | Holds 2.4 m within 0.05 m. Learned hover throttle is 0.493 (theory: 0.49). |
-| 9° roll step | The estimate tracks 9°. The true angle is about 11.5°, because no GPS is available to correct the estimate (see section 3). |
+| 9° roll step | The estimate tracks 9°. The true angle is about 11.5°, because this test flies without GPS (see section 10 for the GPS-aided version). |
 | IMU0 freezes in flight | Fails over to IMU1 and keeps flying level. |
 | RC lost | Failsafe LAND, touchdown at 0.56 m/s, disarmed 7 s later. |
 
@@ -98,9 +98,39 @@ The test flies a 6-DOF model of a 1.2 kg quad (motor lag, drag, ground contact).
 - The publish counter is now 32-bit. A 64-bit atomic is not lock-free on Cortex-M.
 - Reads are tear-free: if the publisher lapped the reader during a copy, the read is retried.
 
+## 10. GPS-aided attitude (commit 3)
+
+**The problem.** A multirotor's accelerometer measures thrust plus drag, not gravity. While the quad holds a bank and keeps accelerating sideways, the reading stays along body Z and looks level. Madgwick then drifts toward level, the controller tilts further to hold the commanded angle, and the true bank grows. In SITL, a 15° bank stick held for 4 s ended at **26° true bank with an 11.7° estimate error**.
+
+**Why the old compensation didn't help.**
+- The previous code already subtracted GPS acceleration, but it never ran in SITL. A GPS with no fix stayed the active GPS forever, so a working GPS was never selected. The posix HAL auto-registers an NMEA GPS on the UART first, which triggered this. The sensor manager now marks a GPS without a 3D fix as DEGRADED, so a GPS with a fix takes over.
+- Once GPS reached it, the old method cut the error to 2°, but its GPS acceleration lagged by ~250 ms because differentiating velocity adds lag on top of receiver latency. In a turn the acceleration vector rotates, so that lag points the correction the wrong way.
+
+**The new method** (`fusion/ahrs_interface.cpp`, similar to ArduPilot DCM):
+1. Integrate the gyro (Madgwick with no accelerometer feedback).
+2. Every GPS sample, compare the change in GPS velocity over the last ~0.4 s with the integral of earth-frame specific force over the **same** window, shifted by the GPS latency (`set_gps_delay_ms`, default 100 ms). Rotate the estimate so the two agree, with a 1 s time constant. Specific force is kept in 10 ms buckets (1.6 s of history). Each correction rotates the stored buckets too, so overlapping windows don't count the same error twice.
+3. Correct heading only from the tilt-compensated magnetometer, so magnetic disturbances can't tilt the estimate.
+4. If GPS stops, coast on the gyro for 3 s, then fall back to plain Madgwick. This also covers 1 Hz receivers.
+
+**Results** (`tests/test_sitl_gps_attitude.cpp`, worst estimate error during the manoeuvre):
+
+| Manoeuvre | No GPS | GPS-aided |
+|---|---|---|
+| 15° bank held 4 s | 11.7° (truth 26.4°) | **0.46°** (truth 15.1°) |
+| 12° pitch + 86°/s yaw, 6 s | 4.5° | **0.57°** |
+| Same turn, real latency 0 / 200 ms (fusion assumes 100) | | 1.2° / 1.3° |
+| Same turn, 5 Hz / 1 Hz GPS | | 0.42° / 1.45° |
+| Bank with GPS lost after 2 s | | 0.38° at end of bank |
+
+Other changes:
+- The SITL rig moved into `tests/sitl_rig.hpp`.
+- `sim::SimGPS` was added: NED velocity, configurable rate and latency, and dropout.
+- Horizontal velocity is dead-reckoned for only 2 s after the last GPS sample. Before, it integrated accelerometer error forever on the bench.
+
 ## Still open / next steps
 
 - Parameter storage (gains, battery threshold, board rotation) in flash.
 - A MAVLink telemetry link to the GCS. UAP has a tested encoder for HEARTBEAT and ATTITUDE that can be ported.
-- An EKF that fuses GPS velocity, so attitude stays unbiased during long manoeuvres.
+- An EKF that fuses GPS velocity and position and estimates gyro bias. The GPS tilt correction in section 10 has no integral term, so a gyro bias of b leaves a tilt error of about b / 1 s (0.6° for 0.01 rad/s).
+- Without GPS, the accelerometer still reads drag as tilt, so the estimate is wrong while a fast-moving quad slows down. A rotor-drag model would fix this.
 - A first build on real hardware: the STM32 code compiles only inside a CubeMX project, and nobody has built it there yet.

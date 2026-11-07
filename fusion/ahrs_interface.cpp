@@ -68,6 +68,13 @@ void SensorFusion::reset() {
     _baro_ref_set = false;
     _last_gps_ms = 0;
     _gps_lin_accel = math::Vector3f(0, 0, 0);
+    for (int i = 0; i < SF_BUCKETS; ++i) {
+        _sf_sum[i] = math::Vector3f(0, 0, 0);
+        _sf_slot[i] = 0;
+    }
+    _gps_count = _gps_head = 0;
+    _have_gps_corr = false;
+    _gps_aiding = false;
 }
 
 math::Vector3f SensorFusion::body_to_ned(const math::Vector3f& v_body) const {
@@ -89,12 +96,14 @@ void SensorFusion::update_attitude(float dt) {
 
     const auto& gyro = imu->get_gyro();
     const auto& accel = imu->get_accel();
+    _now_ms = imu->last_update_ms();
     _state.angular_velocity = gyro;
     _state.linear_accel_body = accel;
 
     auto* compass = _sensors->get_active_compass();
     const bool use_mag = compass && _sensors->has_healthy_compass();
     const math::Vector3f mag = use_mag ? compass->get_field_gauss() : math::Vector3f(0, 0, 0);
+    _mag_in_use = use_mag;
 
     if (!_aligned) {
         if (accel.length() < 0.5f * G) return;
@@ -113,18 +122,41 @@ void SensorFusion::update_attitude(float dt) {
     _time_since_align += dt;
     if (_time_since_align > ALIGN_SETTLE_S) _attitude_filter.set_beta(BETA_FLIGHT);
 
-    // Remove manoeuvre acceleration (from GPS velocity) so accel is a pure gravity reference.
+    // GPS-aided while time-aligned GPS tilt corrections keep arriving.
+    _gps_aiding = _have_gps_corr && _time_since_align > ALIGN_SETTLE_S &&
+                  _now_ms - _last_gps_corr_ms < GPS_AIDING_TIMEOUT_MS;
+
+    // Manoeuvre acceleration from GPS velocity, removed from the accelerometer for the
+    // backup filter and the selector's tilt reference.
     const math::Vector3f lin_body = _attitude_filter.get_quaternion().conjugate().rotate_vector(_gps_lin_accel);
     const math::Vector3f accel_ref = accel - lin_body;
 
-    // Madgwick expects the measured direction of gravity ("down" in body) = -specific force.
-    const math::Vector3f down = -accel_ref;
-    if (use_mag) {
-        _attitude_filter.update_9dof(gyro, down, mag, dt);
+    if (_gps_aiding) {
+        // Gyro only here; tilt comes from gps_tilt_correction(), heading from the mag.
+        _attitude_filter.update_imu(gyro, math::Vector3f(0, 0, 0), dt);
+        if (use_mag) mag_heading_correction(mag, dt);
     } else {
-        _attitude_filter.update_imu(gyro, down, dt);
+        // Madgwick expects the measured direction of gravity ("down" in body) = -specific force.
+        const math::Vector3f down = -accel_ref;
+        if (use_mag) {
+            _attitude_filter.update_9dof(gyro, down, mag, dt);
+        } else {
+            _attitude_filter.update_imu(gyro, down, dt);
+        }
     }
     _backup.update(gyro, accel_ref, use_mag ? &mag : nullptr, dt);
+
+    // Integrate the earth-frame specific force for the GPS tilt comparison.
+    {
+        const math::Vector3f f_ned = _attitude_filter.get_quaternion().rotate_vector(accel);
+        const uint32_t slot = _now_ms / SF_BUCKET_MS + 1;
+        const int i = static_cast<int>(slot % SF_BUCKETS);
+        if (_sf_slot[i] != slot) {
+            _sf_slot[i] = slot;
+            _sf_sum[i] = math::Vector3f(0, 0, 0);
+        }
+        if (std::isfinite(f_ned.x) && std::isfinite(f_ned.y) && std::isfinite(f_ned.z)) _sf_sum[i] += f_ned * dt;
+    }
 
     // ---- selector ----
     math::Quaternion q_primary = _attitude_filter.get_quaternion();
@@ -171,6 +203,80 @@ void SensorFusion::update_attitude(float dt) {
     _state.attitude_valid = std::isfinite(_state.euler_rad.x) && std::isfinite(_state.euler_rad.y);
 }
 
+void SensorFusion::mag_heading_correction(const math::Vector3f& mag, float dt) {
+    // Tilt-compensated magnetic heading, applied as a rotation about earth "down" only,
+    // so magnetic disturbances can never tilt the attitude.
+    math::Quaternion q = _attitude_filter.get_quaternion();
+    float roll, pitch, yaw;
+    q.to_euler(roll, pitch, yaw);
+    const float sr = std::sin(roll), cr = std::cos(roll), sp = std::sin(pitch), cp = std::cos(pitch);
+    const float mx = mag.x * cp + mag.y * sr * sp + mag.z * cr * sp;
+    const float my = mag.y * cr - mag.z * sr;
+    if (mx * mx + my * my < 1e-6f) return;
+    const float err = wrap_pi(std::atan2(-my, mx) - yaw);
+    const float half = 0.5f * std::min(1.0f, MAG_YAW_GAIN * dt) * err;
+    const math::Quaternion dq(std::cos(half), 0.0f, 0.0f, std::sin(half));
+    q = dq * q;
+    q.normalize();
+    _attitude_filter.set_quaternion(q);
+}
+
+void SensorFusion::gps_tilt_correction(const GpsVel& k) {
+    // Store the sample, then look back for one ~GPS_WINDOW_MS older.
+    const GpsVel* prev_sample = _gps_count ? &_gps_hist[(_gps_head + GPS_HIST - 1) % GPS_HIST] : nullptr;
+    const uint32_t gps_dt_ms = prev_sample ? k.t_ms - prev_sample->t_ms : 0;
+    _gps_hist[_gps_head] = k;
+    _gps_head = (_gps_head + 1) % GPS_HIST;
+    if (_gps_count < GPS_HIST) ++_gps_count;
+    if (!prev_sample || gps_dt_ms == 0 || gps_dt_ms > GPS_MAX_WINDOW_MS) return;
+
+    const GpsVel* j = nullptr;
+    for (int n = 1; n < _gps_count; ++n) {
+        const GpsVel& c = _gps_hist[(_gps_head + GPS_HIST - 1 - n) % GPS_HIST];
+        const uint32_t age = k.t_ms - c.t_ms;
+        if (age >= GPS_WINDOW_MS) {
+            if (age <= GPS_MAX_WINDOW_MS) j = &c;
+            break;
+        }
+    }
+    if (!j || j->t_ms < _gps_delay_ms) return;
+
+    // Earth-frame specific force integrated over the same (latency-shifted) window.
+    const uint32_t s0 = (j->t_ms - _gps_delay_ms) / SF_BUCKET_MS + 1;
+    const uint32_t s1 = (k.t_ms - _gps_delay_ms) / SF_BUCKET_MS + 1;
+    if (s1 <= s0 || s1 - s0 >= static_cast<uint32_t>(SF_BUCKETS)) return;
+    math::Vector3f f_ins(0, 0, 0);
+    for (uint32_t slot = s0; slot < s1; ++slot) {
+        const int i = static_cast<int>(slot % SF_BUCKETS);
+        if (_sf_slot[i] != slot) return; // gap in IMU data: skip this comparison
+        f_ins += _sf_sum[i];
+    }
+
+    // What GPS says the specific force integral was: dv - g*T (NED, gravity +z).
+    const float T = static_cast<float>((s1 - s0) * SF_BUCKET_MS) * 1e-3f;
+    math::Vector3f f_gps = k.v - j->v;
+    f_gps.z = (k.has_vz && j->has_vz) ? f_gps.z - G * T : f_ins.z; // no vertical velocity: horizontal only
+
+    const float n_ins = f_ins.length(), n_gps = f_gps.length();
+    if (n_ins < 0.5f * G * T || n_ins > 1.5f * G * T || n_gps < 0.5f * G * T || n_gps > 1.5f * G * T) return;
+
+    // Rotate the estimate (in the earth frame) so f_ins turns toward f_gps.
+    math::Vector3f e = (f_ins / n_ins).cross(f_gps / n_gps);
+    if (_mag_in_use) e.z = 0.0f; // heading belongs to the magnetometer
+    const math::Vector3f phi = e * std::min(1.0f, GPS_TILT_GAIN * gps_dt_ms * 1e-3f);
+    math::Quaternion q = math::Quaternion(1.0f, 0.5f * phi.x, 0.5f * phi.y, 0.5f * phi.z) * _attitude_filter.get_quaternion();
+    q.normalize();
+    if (!(std::isfinite(q.q0) && std::isfinite(q.q1) && std::isfinite(q.q2) && std::isfinite(q.q3))) return;
+    _attitude_filter.set_quaternion(q);
+
+    // The stored integrals were computed with the old attitude: rotate them too, so the
+    // next (overlapping) window doesn't count the same error again.
+    for (int i = 0; i < SF_BUCKETS; ++i) _sf_sum[i] += phi.cross(_sf_sum[i]);
+
+    _last_gps_corr_ms = _now_ms;
+    _have_gps_corr = true;
+}
+
 void SensorFusion::update_altitude(float dt) {
     if (!_sensors || !_state.attitude_valid) return;
 
@@ -202,14 +308,21 @@ void SensorFusion::update_altitude(float dt) {
 void SensorFusion::update_position(float dt) {
     if (!_sensors || !_state.attitude_valid) return;
 
-    // dead-reckon with accel between GPS samples
-    _state.velocity_ned.x += _state.linear_accel_ned.x * dt;
-    _state.velocity_ned.y += _state.linear_accel_ned.y * dt;
-    _state.position_ned.x += _state.velocity_ned.x * dt;
-    _state.position_ned.y += _state.velocity_ned.y * dt;
-
     auto* gps = _sensors->get_active_gps();
-    if (!gps || !_sensors->has_healthy_gps() || !gps->has_3d_fix()) {
+    const bool gps_ok = gps && _sensors->has_healthy_gps() && gps->has_3d_fix();
+
+    // Dead-reckon with accel between GPS samples, but only briefly: without GPS the
+    // integrated accel bias makes velocity grow without bound.
+    if (_have_home && _now_ms - _last_gps_ms < DEAD_RECKON_MS) {
+        _state.velocity_ned.x += _state.linear_accel_ned.x * dt;
+        _state.velocity_ned.y += _state.linear_accel_ned.y * dt;
+        _state.position_ned.x += _state.velocity_ned.x * dt;
+        _state.position_ned.y += _state.velocity_ned.y * dt;
+    } else {
+        _state.velocity_ned.x = _state.velocity_ned.y = 0.0f; // unknown
+    }
+
+    if (!gps_ok) {
         _state.position_valid = false;
         _gps_lin_accel = math::Vector3f(0, 0, 0);
         return;
@@ -232,6 +345,7 @@ void SensorFusion::update_position(float dt) {
                 _gps_lin_accel = _gps_lin_accel + (a - _gps_lin_accel) * 0.5f;
             }
         }
+        gps_tilt_correction(GpsVel{d.timestamp_ms, d.velocity_ned, d.has_velocity_ned});
         _prev_gps_vel = d.velocity_ned;
         _last_gps_ms = d.timestamp_ms;
     }

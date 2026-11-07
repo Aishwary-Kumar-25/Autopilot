@@ -125,4 +125,8 @@ if(BUILD_TESTS)
     add_executable(test_sitl_flight tests/test_sitl_flight.cpp)
     target_link_libraries(test_sitl_flight PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_flight COMMAND test_sitl_flight)
+
+    add_executable(test_sitl_gps_attitude tests/test_sitl_gps_attitude.cpp)
+    target_link_libraries(test_sitl_gps_attitude PRIVATE autopilot_core pthread)
+    add_test(NAME test_sitl_gps_attitude COMMAND test_sitl_gps_attitude)
 endif()
