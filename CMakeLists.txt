@@ -53,7 +53,16 @@ set(CORE_SOURCES
     system/scheduler.cpp
     system/telemetry.cpp
     system/pubsub.hpp
+    comms/mavlink/mavlink_protocol.cpp
+    comms/params.cpp
+    comms/vehicle_params.cpp
+    comms/gcs_link.cpp
 )
+
+# MAVLink over UDP for SITL / desktop builds (POSIX sockets)
+if(NOT STM32_TARGET)
+    list(APPEND CORE_SOURCES hal/posix/udp_link.cpp)
+endif()
 
 if(ENABLE_DRIVER_MPU6050)
     list(APPEND CORE_SOURCES drivers/imu/mpu6050.cpp)
@@ -94,6 +103,13 @@ add_library(autopilot_core STATIC ${CORE_SOURCES})
 # Target Executable
 add_executable(autopilot_app system/main.cpp)
 target_link_libraries(autopilot_app PRIVATE autopilot_core pthread)
+
+# Real-time SITL: simulated quad + the full flight stack, talking MAVLink over
+# UDP to QGroundControl (127.0.0.1:14550). See docs/MAVLINK_QGC.md.
+if(NOT STM32_TARGET)
+    add_executable(autopilot_sitl sim/sitl_main.cpp)
+    target_link_libraries(autopilot_sitl PRIVATE autopilot_core pthread)
+endif()
 
 if(BUILD_TESTS)
     enable_testing()
@@ -137,4 +153,9 @@ if(BUILD_TESTS)
     add_executable(test_sitl_gps_attitude tests/test_sitl_gps_attitude.cpp)
     target_link_libraries(test_sitl_gps_attitude PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_gps_attitude COMMAND test_sitl_gps_attitude)
+
+    # MAVLink codec (golden frames from pymavlink) + GCS link behaviour
+    add_executable(test_mavlink tests/test_mavlink.cpp)
+    target_link_libraries(test_mavlink PRIVATE autopilot_core pthread)
+    add_test(NAME test_mavlink COMMAND test_mavlink)
 endif()

@@ -130,7 +130,7 @@ Other changes:
 ## Still open / next steps
 
 - Parameter storage (gains, battery threshold, board rotation) in flash.
-- A MAVLink telemetry link to the GCS. UAP has a tested encoder for HEARTBEAT and ATTITUDE that can be ported.
+- ~~A MAVLink telemetry link to the GCS.~~ Done in commit 5 (see below and docs/MAVLINK_QGC.md).
 - An EKF that fuses GPS velocity and position and estimates gyro bias. The GPS tilt correction in section 10 has no integral term, so a gyro bias of b leaves a tilt error of about b / 1 s (0.6° for 0.01 rad/s).
 - Without GPS, the accelerometer still reads drag as tilt, so the estimate is wrong while a fast-moving quad slows down. A rotor-drag model would fix this.
 - A first build on real hardware: the STM32 code compiles only inside a CubeMX project, and nobody has built it there yet.
@@ -178,3 +178,18 @@ programs (4 new here), all passing, also under AddressSanitizer + UBSan and with
 
 - MPU6050 and ICM20689 drivers are near-identical; a shared InvenSense base class would save flash.
 - Compass calibration still needs a trigger (GCS command or stick gesture) and parameter storage for the result.
+
+---
+
+# Commit 5: MAVLink 2 link and QGroundControl SITL
+
+The vehicle now talks MAVLink 2 to QGroundControl. Run `./build/autopilot_sitl`, open QGC, and the simulated quad connects on UDP 14550. Full details are in `docs/MAVLINK_QGC.md`.
+
+What was added:
+- A hand-written v2 codec, with no generated headers and no heap use. All 13 encoders match pymavlink byte for byte (`tests/mavlink_golden.hpp`). The parser accepts both v1 and v2.
+- `GcsLink` streams heartbeat, system status, attitude, HUD, GPS/position and PWM outputs. It sends STATUSTEXT for arm/disarm, failsafe and its cause, sensor health and mode changes. It also handles the parameter protocol, arm/disarm, mode changes, message intervals and requests, and joystick input via MANUAL_CONTROL, which counts as RC input.
+- 21 parameters can be tuned from the GCS: vehicle profile, frame, flight mode, failsafe settings and the multicopter PID gains. Tuning survives a profile switch.
+- Safety rules: disarming in the air needs the force flag, and profile or frame changes are refused while armed.
+- Tests: `test_mavlink` has 108 checks. `tools/sitl_gcs_check.py` uses pymavlink as the GCS and flies the SITL through params, arm, climb, ALT_HOLD, land and disarm.
+
+Not done yet: verifying MAVLink signing (signed frames are parsed but not verified), missions and guided modes, and saving parameters across reboots.

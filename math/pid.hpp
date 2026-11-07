@@ -36,6 +36,8 @@ public:
         _config.imax = imax;
     }
 
+    const Config& config() const { return _config; }
+
     void reset() {
         _integrator = 0.0f;
         _last_output = 0.0f;

@@ -52,11 +52,13 @@ Autopilot_eclub/
 │   ├── ARCHITECTURE.md         # System architecture & dataflow diagrams
 │   ├── SENSOR_PLUG_AND_PLAY.md # PnP sensor pinouts, DroneCAN, & hot-swap
 │   ├── HARDWARE_STM32_HAL.md   # STM32 class pinouts, timers, & cross-compile
+│   ├── MAVLINK_QGC.md          # MAVLink 2 link, QGroundControl SITL, parameters
 │   └── ACTUATOR_MATRIX_MIXING.md # 2-16 channel matrix mixer & geometry presets
 ├── hal/                        # Hardware Abstraction Layer
 │   ├── hal.hpp                 # Bus, Timer, PWM, & Peripheral interfaces
 │   ├── posix/                  # Linux/POSIX host simulation & mock hardware
 │   └── stm32/                  # STM32 hardware timers, PWM channels, bxCAN, I2C
+├── comms/                      # MAVLink 2 ground-station link + parameter store
 ├── drivers/                    # Modular Plug-and-Play Sensor Drivers
 │   ├── can/                    # DroneCAN node dispatcher, parser, and CAN drivers
 │   ├── sensor_interface.hpp    # IMU, Barometer, Magnetometer, GPS interfaces
@@ -87,7 +89,7 @@ Autopilot_eclub/
 ├── system/                     # Real-Time Scheduling & Telemetry
 │   ├── pubsub.hpp              # Zero-allocation Pub/Sub messaging middleware
 │   ├── scheduler.hpp/cpp       # AP_Scheduler-style multi-rate cyclic executor
-│   ├── telemetry.hpp/cpp       # Serial/MAVLink telemetry reporting
+│   ├── telemetry.hpp/cpp       # Plain-text serial status lines (debug console)
 │   └── main.cpp                # Main system entrypoint & flight loop
 └── tests/                      # Automated Test Suite
     ├── test_pnp_sensors.cpp    # PnP discovery, fault injection, & hot-swap
@@ -131,3 +133,11 @@ All five automated test suites will execute:
 # Run ROV Underwater Submarine
 ./autopilot_app rov
 ```
+
+### 4. Fly the SITL quad from QGroundControl (MAVLink 2 over UDP)
+```bash
+./autopilot_sitl            # then open QGroundControl: the vehicle connects on UDP 14550
+```
+Enable QGC's virtual joystick (or plug in a gamepad), arm, and fly. Parameters,
+flight modes, arm/disarm, failsafe messages and PWM outputs all show in QGC.
+See [docs/MAVLINK_QGC.md](docs/MAVLINK_QGC.md).

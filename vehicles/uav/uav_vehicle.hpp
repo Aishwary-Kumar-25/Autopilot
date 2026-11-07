@@ -15,6 +15,11 @@ enum class UAVFlightMode {
     ALT_HOLD
 };
 
+/** The UAV's PID loops, for tuning from a parameter system / ground station. */
+enum class UAVPid : uint8_t {
+    ROLL_ANGLE, PITCH_ANGLE, ROLL_RATE, PITCH_RATE, YAW_RATE, ALTITUDE, CLIMB_RATE
+};
+
 class UAVVehicle : public VehicleBase {
 public:
     explicit UAVVehicle(hal::HAL* hal, uint8_t initial_rotors = 4);
@@ -52,6 +57,20 @@ public:
      * sample_hz is the rate step() is called at.
      */
     void set_gyro_filters(float lpf_hz, float notch_hz, float notch_bw_hz, float sample_hz);
+
+    /** Access one PID loop (gains are read with config(), changed with set_gains()). */
+    math::PID& pid(UAVPid which) {
+        switch (which) {
+            case UAVPid::ROLL_ANGLE:  return _roll_angle_pid;
+            case UAVPid::PITCH_ANGLE: return _pitch_angle_pid;
+            case UAVPid::ROLL_RATE:   return _roll_rate_pid;
+            case UAVPid::PITCH_RATE:  return _pitch_rate_pid;
+            case UAVPid::YAW_RATE:    return _yaw_rate_pid;
+            case UAVPid::ALTITUDE:    return _altitude_pid;
+            case UAVPid::CLIMB_RATE:
+            default:                  return _velocity_z_pid;
+        }
+    }
 
     // Tunables (exposed for the simulator / parameter system)
     static constexpr float MAX_ANGLE_RAD = 30.0f * 0.0174532925f;
