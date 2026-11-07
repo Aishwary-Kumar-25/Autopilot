@@ -1,4 +1,5 @@
 #include "sensor_manager.hpp"
+#include "drivers/can/dronecan_node.hpp"
 
 #ifdef ENABLE_DRIVER_MPU6050
 #include "drivers/imu/mpu6050.hpp"
@@ -145,9 +146,23 @@ void SensorManager::auto_discover_sensors() {
         }
     }
 #endif
+
+    // 5. DroneCAN on CAN Bus
+    auto* can = _hal->get_can();
+    if (can && time) {
+        _dronecan_node = std::make_unique<dronecan::DroneCANNode>(can, time, 1);
+        _dronecan_node->init(1000000);
+    }
 }
 
 void SensorManager::update() {
+    if (_dronecan_node) {
+        _dronecan_node->process_rx();
+        for (const auto& s : _dronecan_node->get_discovered_sensors()) {
+            register_sensor(s);
+        }
+    }
+
     for (auto& s : _all_sensors) {
         if (s && s->health() != SensorHealth::DISCONNECTED) {
             s->update();
@@ -258,6 +273,10 @@ void SensorManager::probe_and_recover_sensors() {
                 }
             }
         }
+    }
+
+    if (_dronecan_node) {
+        _dronecan_node->broadcast_node_status();
     }
 }
 

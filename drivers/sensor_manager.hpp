@@ -9,6 +9,10 @@
 namespace autopilot {
 namespace drivers {
 
+namespace dronecan {
+class DroneCANNode;
+}
+
 class SensorManager {
 public:
     static constexpr size_t MAX_IMUS = 2;
@@ -56,9 +60,11 @@ public:
     void set_event_callback(SensorEventCallback cb) { _event_callback = cb; }
 
     const std::vector<std::shared_ptr<Sensor>>& get_all_sensors() const { return _all_sensors; }
+    dronecan::DroneCANNode* get_dronecan() const { return _dronecan_node.get(); }
 
 private:
     hal::HAL* _hal{nullptr};
+    std::unique_ptr<dronecan::DroneCANNode> _dronecan_node;
     std::vector<std::shared_ptr<Sensor>> _all_sensors;
 
     IMUSensor* _active_imu{nullptr};

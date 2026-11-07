@@ -14,6 +14,7 @@ option(ENABLE_DRIVER_ICM20689 "Compile ICM-20689 IMU Driver" ON)
 option(ENABLE_DRIVER_BMP280   "Compile BMP280 Barometer Driver" ON)
 option(ENABLE_DRIVER_QMC5883L "Compile QMC5883L Magnetometer Driver" ON)
 option(ENABLE_DRIVER_NMEA_GPS "Compile NMEA GPS Driver" ON)
+option(ENABLE_CAN_DRONECAN    "Compile DroneCAN Sensor Drivers" ON)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -75,6 +76,14 @@ if(ENABLE_DRIVER_NMEA_GPS)
     add_compile_definitions(ENABLE_DRIVER_NMEA_GPS=1)
 endif()
 
+if(ENABLE_CAN_DRONECAN)
+    list(APPEND CORE_SOURCES
+        drivers/can/dronecan_sensors.cpp
+        drivers/can/dronecan_node.cpp
+    )
+    add_compile_definitions(ENABLE_CAN_DRONECAN=1)
+endif()
+
 add_library(autopilot_core STATIC ${CORE_SOURCES})
 
 # Target Executable
@@ -99,4 +108,8 @@ if(BUILD_TESTS)
     add_executable(test_pubsub tests/test_pubsub.cpp)
     target_link_libraries(test_pubsub PRIVATE autopilot_core pthread)
     add_test(NAME test_pubsub COMMAND test_pubsub)
+
+    add_executable(test_dronecan tests/test_dronecan.cpp)
+    target_link_libraries(test_dronecan PRIVATE autopilot_core pthread)
+    add_test(NAME test_dronecan COMMAND test_dronecan)
 endif()
