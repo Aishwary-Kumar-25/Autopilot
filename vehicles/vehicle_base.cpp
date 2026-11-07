@@ -1,4 +1,5 @@
 #include "vehicle_base.hpp"
+#include <cstring>
 
 namespace autopilot {
 namespace vehicles {
@@ -24,6 +25,26 @@ void VehicleBase::attach_shared_stack(drivers::SensorManager* sensors, fusion::S
 uint32_t VehicleBase::now_ms() const {
     auto* t = _hal ? _hal->get_time() : nullptr;
     return t ? t->millis() : 0;
+}
+
+void VehicleBase::post_event(uint8_t severity, const char* text) {
+    const uint8_t slot = static_cast<uint8_t>((_event_head + _event_count) % EVENT_QUEUE);
+    _events[slot].severity = severity;
+    std::strncpy(_events[slot].text, text ? text : "", sizeof(_events[slot].text) - 1);
+    _events[slot].text[sizeof(_events[slot].text) - 1] = '\0';
+    if (_event_count < EVENT_QUEUE) {
+        ++_event_count;
+    } else {
+        _event_head = static_cast<uint8_t>((_event_head + 1) % EVENT_QUEUE);   // drop the oldest
+    }
+}
+
+bool VehicleBase::pop_event(Event& out) {
+    if (_event_count == 0) return false;
+    out = _events[_event_head];
+    _event_head = static_cast<uint8_t>((_event_head + 1) % EVENT_QUEUE);
+    --_event_count;
+    return true;
 }
 
 bool VehicleBase::init() {
@@ -122,6 +143,7 @@ void VehicleBase::step(float dt) {
         in.battery_voltage = _battery_voltage;
         in.attitude_valid = get_state().attitude_valid;
         in.imu_usable = _sensors->has_healthy_imu();
+        in.actuator_failure = actuator_failure_needs_land();
         fs = _failsafe.update(in);
     }
 

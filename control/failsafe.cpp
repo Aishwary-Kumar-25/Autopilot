@@ -37,17 +37,18 @@ FailsafeAction Failsafe::update(const FailsafeInputs& in) {
 
     if (!in.attitude_valid) reasons |= FS_ESTIMATOR;
     if (!in.imu_usable) reasons |= FS_NO_IMU;
+    if (in.actuator_failure) reasons |= FS_MOTOR;
 
     FailsafeAction act = FailsafeAction::NONE;
     if (reasons & FS_NO_IMU) {
         act = FailsafeAction::TERMINATE;
-    } else if (reasons & (FS_RC_LOSS | FS_BATTERY | FS_ESTIMATOR)) {
+    } else if (reasons & (FS_RC_LOSS | FS_BATTERY | FS_ESTIMATOR | FS_MOTOR)) {
         act = FailsafeAction::LAND;
     }
 
-    // Battery / estimator landings are committed: they don't cancel if the
+    // Battery / estimator / motor landings are committed: they don't cancel if the
     // condition clears. Only a pure RC loss gives control back on RC recovery.
-    if (act == FailsafeAction::LAND && (reasons & (FS_BATTERY | FS_ESTIMATOR))) {
+    if (act == FailsafeAction::LAND && (reasons & (FS_BATTERY | FS_ESTIMATOR | FS_MOTOR))) {
         _committed_land = true;
     }
     if (_committed_land && act == FailsafeAction::NONE) {

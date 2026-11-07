@@ -33,6 +33,7 @@ const char* ActuatorMatrixMixer::get_preset_name() const {
 }
 
 bool ActuatorMatrixMixer::load_preset(MixerPreset preset) {
+    reset_failures();
     _current_preset = preset;
     // Reset all actuators
     for (size_t i = 0; i < hal::PWMOutput::MAX_CHANNELS; ++i) {
@@ -83,6 +84,7 @@ bool ActuatorMatrixMixer::configure_rov(uint8_t num_thrusters) {
     if (num_thrusters < 2 || num_thrusters > hal::PWMOutput::MAX_CHANNELS) {
         return false;
     }
+    reset_failures();
 
     switch (num_thrusters) {
         case 3:
@@ -104,6 +106,7 @@ bool ActuatorMatrixMixer::configure_uav(uint8_t num_rotors) {
     if (num_rotors < 3 || num_rotors > hal::PWMOutput::MAX_CHANNELS) {
         return false;
     }
+    reset_failures();
 
     switch (num_rotors) {
         case 3:
@@ -270,6 +273,7 @@ bool ActuatorMatrixMixer::set_actuator_config(uint8_t channel, const ActuatorCon
     if (channel >= hal::PWMOutput::MAX_CHANNELS) {
         return false;
     }
+    clear_motor_failures();   // edit the healthy geometry, not a re-allocated one
     _actuators[channel] = config;
     if (channel >= _num_channels && config.enabled) {
         _num_channels = channel + 1;
@@ -295,6 +299,7 @@ ActuatorConfig& ActuatorMatrixMixer::get_actuator_config_mut(uint8_t channel) {
 }
 
 void ActuatorMatrixMixer::set_num_channels(uint8_t count) {
+    clear_motor_failures();
     _num_channels = std::min<uint8_t>(count, hal::PWMOutput::MAX_CHANNELS);
     for (uint8_t i = 0; i < hal::PWMOutput::MAX_CHANNELS; ++i) {
         _actuators[i].enabled = (i < _num_channels);
@@ -357,52 +362,91 @@ void ActuatorMatrixMixer::get_normalized_outputs(const ControlDemands& demands_i
     }
 
     if (any_uni) {
-        // Spread (max - min) of a set of unidirectional terms.
-        auto spread = [&](float k_rp, float k_y) {
-            float lo = 1e9f, hi = -1e9f;
-            for (size_t i = 0; i < count; ++i) {
-                if (_actuators[i].bidirectional || !_actuators[i].enabled) continue;
-                const float v = k_rp * rp[i] + k_y * yw[i];
-                lo = std::min(lo, v);
-                hi = std::max(hi, v);
-            }
-            return hi - lo;
+        // Desaturation in priority order, for any collective direction h_i (all 1
+        // on a healthy frame; uneven after a motor failure re-allocation, where a
+        // uniform shift would itself produce torque):
+        //   out_i = T * h_i + k_rp * rp_i + k_y * yw_i,   0 <= out_i <= 1
+        // 1. the largest k_rp <= 1 for which some collective T fits every motor,
+        // 2. then the largest k_y <= 1 on top of that,
+        // 3. then T as close to the demanded collective as the motors allow.
+        // On a healthy frame step 1/2 reduce to "the differential spread must fit
+        // in [0, 1]" and step 3 to the usual collective shift ("air mode").
+        // Motors with (almost) no collective share (the motor opposite a failed
+        // one) can't be helped by any T: they are left out and simply clipped.
+        float h[hal::PWMOutput::MAX_CHANNELS]{};
+        float h_max = 0.0f;
+        for (size_t i = 0; i < count; ++i) {
+            const auto& act = _actuators[i];
+            if (act.bidirectional || !act.enabled) continue;
+            h[i] = (act.reversed ? -1.0f : 1.0f) * act.heave;
+            h_max = std::max(h_max, h[i]);
+        }
+        const float h_min_driving = 0.05f * h_max;
+        auto driving = [&](size_t i) {
+            return !_actuators[i].bidirectional && _actuators[i].enabled && h[i] > h_min_driving;
         };
 
-        // Motors can only span [0, 1], so the differential part must fit in a spread of 1.
-        float k_rp = 1.0f, k_y = 1.0f;
-        if (spread(1.0f, 1.0f) > 1.0f) {
-            const float s_rp = spread(1.0f, 0.0f);
-            if (s_rp >= 1.0f) {
-                // Roll/pitch alone saturate: scale them to fit, drop yaw entirely.
-                k_rp = 1.0f / s_rp;
-                k_y = 0.0f;
-            } else {
-                // Keep full roll/pitch, give yaw as much as still fits (bisection, spread is convex in k_y).
-                float lo = 0.0f, hi = 1.0f;
-                for (int it = 0; it < 12; ++it) {
-                    const float mid = 0.5f * (lo + hi);
-                    if (spread(1.0f, mid) <= 1.0f) lo = mid; else hi = mid;
+        // Largest k in [0, 1] such that a + k*w fits: for every pair (i, j)
+        //   (-a_i - k w_i) / h_i <= (1 - a_j - k w_j) / h_j
+        auto max_k = [&](const float* a, const float* w) {
+            float k = 1.0f;
+            for (size_t i = 0; i < count; ++i) {
+                if (!driving(i)) continue;
+                for (size_t j = 0; j < count; ++j) {
+                    if (j == i || !driving(j)) continue;
+                    const float b = w[j] / h[j] - w[i] / h[i];
+                    if (b <= 1e-9f) continue;
+                    const float c = 1.0f / h[j] + a[i] / h[i] - a[j] / h[j];
+                    k = std::min(k, std::max(0.0f, c) / b);
                 }
-                k_y = lo;
+            }
+            return k;
+        };
+
+        // Collective range in which every driving motor fits a + k*w (lo > hi: none).
+        auto t_range = [&](const float* v, float& lo, float& hi) {
+            lo = -1e9f;
+            hi = 1e9f;
+            for (size_t i = 0; i < count; ++i) {
+                if (!driving(i)) continue;
+                lo = std::max(lo, -v[i] / h[i]);
+                hi = std::min(hi, (1.0f - v[i]) / h[i]);
+            }
+        };
+        auto fit = [](float t, float lo, float hi) {
+            if (lo <= hi) return std::clamp(t, lo, hi);
+            return lo > -1e8f ? 0.5f * (lo + hi) : t;
+        };
+
+        float zero[hal::PWMOutput::MAX_CHANNELS]{};
+        const float k_rp = max_k(zero, rp);
+        float a_rp[hal::PWMOutput::MAX_CHANNELS]{};
+        for (size_t i = 0; i < count; ++i) a_rp[i] = k_rp * rp[i];
+        float lo, hi;
+        t_range(a_rp, lo, hi);
+        const float t_rp = fit(demands.throttle, lo, hi);   // collective after roll/pitch
+
+        // Yaw may move that collective only a little: otherwise a yaw demand the
+        // frame can't meet (yaw integrator wound up after a motor failure) would
+        // drag the collective along and climb or sink the vehicle.
+        constexpr float YAW_COLLECTIVE_BAND = 0.1f;
+        float k_y = max_k(a_rp, yw);
+        for (size_t i = 0; i < count; ++i) {
+            if (!driving(i)) continue;
+            if (yw[i] < 0.0f) {
+                k_y = std::min(k_y, std::max(0.0f, a_rp[i] + (t_rp + YAW_COLLECTIVE_BAND) * h[i]) / -yw[i]);
+            } else if (yw[i] > 0.0f) {
+                k_y = std::min(k_y, std::max(0.0f, 1.0f - (t_rp - YAW_COLLECTIVE_BAND) * h[i] - a_rp[i]) / yw[i]);
             }
         }
 
-        // Compose and find the out-of-range amount, then shift the collective.
-        float lo = 1e9f, hi = -1e9f;
+        float v[hal::PWMOutput::MAX_CHANNELS]{};
+        for (size_t i = 0; i < count; ++i) v[i] = a_rp[i] + k_y * yw[i];
+        t_range(v, lo, hi);
+        const float t = fit(t_rp, lo, hi);
         for (size_t i = 0; i < count; ++i) {
             if (_actuators[i].bidirectional || !_actuators[i].enabled) continue;
-            out_values[i] += k_rp * rp[i] + k_y * yw[i];
-            lo = std::min(lo, out_values[i]);
-            hi = std::max(hi, out_values[i]);
-        }
-        float shift = 0.0f;
-        if (hi > 1.0f) shift = 1.0f - hi;      // reduce collective (spread <= 1 keeps lo >= 0)
-        else if (lo < 0.0f) shift = -lo;       // raise collective to keep differential authority
-        if (shift != 0.0f) {
-            for (size_t i = 0; i < count; ++i) {
-                if (!_actuators[i].bidirectional && _actuators[i].enabled) out_values[i] += shift;
-            }
+            out_values[i] = t * h[i] + v[i];
         }
     }
 
@@ -422,6 +466,7 @@ void ActuatorMatrixMixer::output_to_actuators(const ControlDemands& demands, hal
     if (!pwm) return;
 
     if (!armed) {
+        for (float& o : _last_outputs) o = 0.0f;
         // Output safe neutral / disarmed PWM pulses
         for (uint8_t i = 0; i < hal::PWMOutput::MAX_CHANNELS; ++i) {
             if (i < _num_channels && _actuators[i].enabled) {
@@ -435,6 +480,7 @@ void ActuatorMatrixMixer::output_to_actuators(const ControlDemands& demands, hal
 
     float normalized[hal::PWMOutput::MAX_CHANNELS]{0.0f};
     get_normalized_outputs(demands, normalized, _num_channels);
+    for (uint8_t i = 0; i < hal::PWMOutput::MAX_CHANNELS; ++i) _last_outputs[i] = normalized[i];
 
     for (uint8_t i = 0; i < hal::PWMOutput::MAX_CHANNELS; ++i) {
         if (i < _num_channels && _actuators[i].enabled) {
@@ -460,6 +506,175 @@ void ActuatorMatrixMixer::output_to_actuators(const ControlDemands& demands, hal
             pwm->set_channel(i, 1000);
         }
     }
+}
+
+// ---------------- Motor failure: control re-allocation ----------------
+
+const char* allocation_status_name(AllocationStatus s) {
+    switch (s) {
+        case AllocationStatus::NOMINAL:        return "nominal";
+        case AllocationStatus::DEGRADED:       return "degraded";
+        case AllocationStatus::NO_YAW:         return "no yaw";
+        case AllocationStatus::UNCONTROLLABLE:
+        default:                               return "uncontrollable";
+    }
+}
+
+namespace {
+/** In-place inverse of a small SPD-ish matrix (n <= 4), Gauss-Jordan with partial
+ *  pivoting. False when a pivot is tiny relative to the matrix scale (singular). */
+bool invert_small(float m[4][4], int n, float inv[4][4]) {
+    float scale = 0.0f;
+    for (int i = 0; i < n; ++i) scale = std::max(scale, std::fabs(m[i][i]));
+    if (scale <= 0.0f) return false;
+    float a[4][8]{};
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) a[i][j] = m[i][j];
+        a[i][n + i] = 1.0f;
+    }
+    for (int c = 0; c < n; ++c) {
+        int p = c;
+        for (int r = c + 1; r < n; ++r) if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
+        if (std::fabs(a[p][c]) < 1e-4f * scale) return false;
+        if (p != c) for (int j = 0; j < 2 * n; ++j) std::swap(a[p][j], a[c][j]);
+        const float d = a[c][c];
+        for (int j = 0; j < 2 * n; ++j) a[c][j] /= d;
+        for (int r = 0; r < n; ++r) {
+            if (r == c) continue;
+            const float f = a[r][c];
+            if (f == 0.0f) continue;
+            for (int j = 0; j < 2 * n; ++j) a[r][j] -= f * a[c][j];
+        }
+    }
+    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) inv[i][j] = a[i][n + j];
+    return true;
+}
+} // namespace
+
+void ActuatorMatrixMixer::reset_failures() {
+    _failed_mask = 0;
+    _alloc_status = AllocationStatus::NOMINAL;
+    _collective_limit = 1.0f;
+}
+
+void ActuatorMatrixMixer::clear_motor_failures() {
+    if (_failed_mask == 0) return;
+    _actuators = _nominal;
+    reset_failures();
+}
+
+const ActuatorConfig& ActuatorMatrixMixer::get_nominal_config(uint8_t channel) const {
+    if (_failed_mask == 0) return get_actuator_config(channel);
+    static ActuatorConfig dummy{};
+    return channel < hal::PWMOutput::MAX_CHANNELS ? _nominal[channel] : dummy;
+}
+
+bool ActuatorMatrixMixer::set_motor_failed(uint8_t channel, bool failed) {
+    if (channel >= _num_channels) return false;
+    const ActuatorConfig& nom = get_nominal_config(channel);
+    if (nom.bidirectional || !nom.enabled) return false;
+    const uint16_t bit = static_cast<uint16_t>(1u << channel);
+    const uint16_t mask = failed ? (_failed_mask | bit) : (_failed_mask & ~bit);
+    if (mask == _failed_mask) return true;
+    if (_failed_mask == 0) _nominal = _actuators;   // first failure: keep the healthy rows
+    if (mask == 0) {
+        clear_motor_failures();
+        return true;
+    }
+    _failed_mask = mask;
+    reallocate();
+    return true;
+}
+
+void ActuatorMatrixMixer::reallocate() {
+    // Effectiveness of motor i on (roll, pitch, yaw, collective) = its healthy row.
+    auto row = [&](size_t i, float r[4]) {
+        const auto& a = _nominal[i];
+        r[0] = a.roll; r[1] = a.pitch; r[2] = a.yaw; r[3] = a.heave;
+    };
+    auto usable = [&](size_t i) { return _nominal[i].enabled && !_nominal[i].bidirectional; };
+
+    // G = R^T R over the healthy frame; M = E E^T over the motors that are left.
+    float G[4][4]{}, M[4][4]{};
+    for (size_t i = 0; i < _num_channels; ++i) {
+        if (!usable(i)) continue;
+        float r[4];
+        row(i, r);
+        const bool alive = !(_failed_mask & (1u << i));
+        for (int a = 0; a < 4; ++a) {
+            for (int b = 0; b < 4; ++b) {
+                G[a][b] += r[a] * r[b];
+                if (alive) M[a][b] += r[a] * r[b];
+            }
+        }
+    }
+
+    // Roll/pitch/collective solve (axes 0, 1, 3): this sets the collective column.
+    static const int ax3[3] = {0, 1, 3};
+    float M3[4][4]{}, M3i[4][4]{}, X3[4][4]{};
+    for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) M3[a][b] = M[ax3[a]][ax3[b]];
+    const bool ok3 = invert_small(M3, 3, M3i);
+    for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b) {
+            float sum = 0.0f;
+            for (int k = 0; k < 3; ++k) sum += M3i[a][k] * G[ax3[k]][ax3[b]];
+            X3[a][b] = sum;   // X3 = M3^-1 G3
+        }
+
+    // Full 4-axis solve: pure roll / pitch / yaw columns, if yaw is still controllable.
+    float M4i[4][4]{}, X4[4][4]{};
+    const bool ok4 = ok3 && invert_small(M, 4, M4i);
+    if (ok4) {
+        for (int a = 0; a < 4; ++a)
+            for (int b = 0; b < 4; ++b) {
+                float sum = 0.0f;
+                for (int k = 0; k < 4; ++k) sum += M4i[a][k] * G[k][b];
+                X4[a][b] = sum;
+            }
+    }
+
+    // The collective always comes from the roll/pitch/collective solve. The 4-axis
+    // solve would hover with zero yaw torque, but on a hexa it parks the motor
+    // opposite the failed one at exactly 0, which leaves roll/pitch one-sided
+    // (in SITL: a 9 deg tilt that can't be trimmed out). This way roll/pitch keep
+    // two-sided authority and yaw takes what is left (a slow yaw drift).
+    float h_max = 0.0f, h_min = 0.0f;
+    for (size_t i = 0; i < _num_channels; ++i) {
+        _actuators[i] = _nominal[i];
+        if (!usable(i)) continue;
+        if (_failed_mask & (1u << i)) {
+            _actuators[i].enabled = false;   // a dead motor is commanded to idle
+            continue;
+        }
+        if (!ok3) continue;
+        float r[4];
+        row(i, r);
+        const float r3[3] = {r[0], r[1], r[3]};
+        float c3[3];
+        for (int b = 0; b < 3; ++b) c3[b] = r3[0] * X3[0][b] + r3[1] * X3[1][b] + r3[2] * X3[2][b];
+        auto& a = _actuators[i];
+        a.heave = c3[2];
+        if (ok4) {
+            float c4[4];
+            for (int b = 0; b < 4; ++b) c4[b] = r[0] * X4[0][b] + r[1] * X4[1][b] + r[2] * X4[2][b] + r[3] * X4[3][b];
+            a.roll = c4[0];
+            a.pitch = c4[1];
+            a.yaw = c4[2];
+        } else {
+            a.roll = c3[0];
+            a.pitch = c3[1];
+            a.yaw = 0.0f;
+        }
+        h_max = std::max(h_max, a.heave);
+        h_min = std::min(h_min, a.heave);
+    }
+
+    if (!ok3 || h_max <= 0.0f || h_min < -0.05f * h_max) {
+        _alloc_status = AllocationStatus::UNCONTROLLABLE;
+    } else {
+        _alloc_status = ok4 ? AllocationStatus::DEGRADED : AllocationStatus::NO_YAW;
+    }
+    _collective_limit = h_max > 0.0f ? std::min(1.0f, 1.0f / h_max) : 0.0f;
 }
 
 // ---------------- DroneCAN ESC Output Integration ----------------

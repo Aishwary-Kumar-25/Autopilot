@@ -47,6 +47,7 @@ set(CORE_SOURCES
     control/arming_handler.cpp
     control/failsafe.cpp
     control/actuator_matrix_mixer.cpp
+    control/motor_failure_detector.cpp
     vehicles/vehicle_base.cpp
     vehicles/uav/uav_vehicle.cpp
     vehicles/ugv/ugv_vehicle.cpp
@@ -159,6 +160,11 @@ if(BUILD_TESTS)
     add_executable(test_sitl_vehicles tests/test_sitl_vehicles.cpp)
     target_link_libraries(test_sitl_vehicles PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_vehicles COMMAND test_sitl_vehicles)
+
+    # Motor failure: re-allocation, detection, hexa/quad SITL survival
+    add_executable(test_motor_failure tests/test_motor_failure.cpp)
+    target_link_libraries(test_motor_failure PRIVATE autopilot_core pthread)
+    add_test(NAME test_motor_failure COMMAND test_motor_failure)
 
     add_executable(test_sitl_gps_attitude tests/test_sitl_gps_attitude.cpp)
     target_link_libraries(test_sitl_gps_attitude PRIVATE autopilot_core pthread)

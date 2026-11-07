@@ -11,6 +11,8 @@
  *   - Low battery          : voltage below the threshold for BATT_DEBOUNCE_MS (latched)
  *   - Attitude estimate    : attitude_valid false
  *   - No usable IMU        : nothing left to fly on -> TERMINATE (motors off)
+ *   - Actuator failure     : the vehicle lost a motor and can't keep flying
+ *                            normally (e.g. a quad on 3 motors) -> LAND (committed)
  */
 #include <cstdint>
 
@@ -29,6 +31,7 @@ enum FailsafeReason : uint8_t {
     FS_BATTERY = 1 << 1,
     FS_ESTIMATOR = 1 << 2,
     FS_NO_IMU = 1 << 3,
+    FS_MOTOR = 1 << 4,
 };
 
 struct FailsafeInputs {
@@ -38,6 +41,7 @@ struct FailsafeInputs {
     float battery_voltage{-1.0f};  // < 0 means "no battery monitor"
     bool attitude_valid{false};
     bool imu_usable{false};
+    bool actuator_failure{false};  // vehicle asks for an emergency landing
 };
 
 class Failsafe {

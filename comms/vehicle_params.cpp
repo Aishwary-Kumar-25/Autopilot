@@ -111,6 +111,12 @@ void register_vehicle_params(ParamStore& store, VehicleManager& vm) {
             if (!u || m->is_armed()) return false;
             return u->set_rotor_count(static_cast<uint8_t>(v));
         });
+    // 1 = detect a dead motor in flight and re-allocate control to the others
+    // (see control/motor_failure_detector.hpp), 0 = off.
+    store.add("MOT_FAIL_DETECT", T::INT32, 1.0f, 0, 1, [m](float v) {
+        if (auto* u = active_uav(*m)) u->set_motor_failure_detection(v >= 0.5f);
+        return true;
+    });
     store.add_live("ROV_THRUSTERS", T::INT32, 2, 16,
         [m] { auto* r = active_rov(*m); return r ? static_cast<float>(r->get_thruster_count()) : 6.0f; },
         [m](float v) {

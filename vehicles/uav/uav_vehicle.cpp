@@ -1,5 +1,6 @@
 #include "uav_vehicle.hpp"
 #include <cmath>
+#include <cstdio>
 
 namespace autopilot {
 namespace vehicles {
@@ -102,6 +103,12 @@ void UAVVehicle::on_arm() {
     // Integrators from the last flight (or from sitting on the bench) must not
     // carry into a new takeoff.
     reset_pids();
+    // A new flight starts with every motor trusted again (and re-checked in the air).
+    if (_matrix_mixer) _matrix_mixer->clear_motor_failures();
+    _motor_fdi.reset();
+    _motor_emergency = false;
+    _last_failed_motor = -1;
+    _motor_failure_ms = 0;
     _landed = true;
     _landed_timer_s = 0.0f;
     _last_throttle = 0.0f;
@@ -136,7 +143,13 @@ void UAVVehicle::run_attitude(float target_roll, float target_pitch, float targe
     const float desired_pitch_rate = _pitch_angle_pid.update(target_pitch, state.euler_rad.y, dt, integrate);
     _demands.roll = _roll_rate_pid.update(desired_roll_rate, rates.x, dt, integrate);
     _demands.pitch = _pitch_rate_pid.update(desired_pitch_rate, rates.y, dt, integrate);
-    _demands.yaw = _yaw_rate_pid.update(target_yaw_rate, rates.z, dt, integrate);
+    if (yaw_abandoned()) {
+        // Nothing can produce yaw torque any more: no loop, no windup.
+        _yaw_rate_pid.reset();
+        _demands.yaw = 0.0f;
+    } else {
+        _demands.yaw = _yaw_rate_pid.update(target_yaw_rate, rates.z, dt, integrate);
+    }
     _demands.forward = 0.0f;
     _demands.lateral = 0.0f;
 }
@@ -170,8 +183,10 @@ void UAVVehicle::update_land_detector(float desired_climb, float dt, bool requir
     // to hover, and nothing is moving. Must hold for 1 s.
     const bool want_down = desired_climb <= 0.0f;
     const bool low_thrust = !require_low_thrust || _last_throttle < 0.6f * _hover_throttle;
-    const bool still = std::fabs(state.vertical_velocity_m_s) < 0.25f &&
-                       state.angular_velocity.length() < 0.5f;
+    // With yaw abandoned the vehicle spins all the way down: only roll/pitch count.
+    const auto& w = state.angular_velocity;
+    const float rot = yaw_abandoned() ? std::sqrt(w.x * w.x + w.y * w.y) : w.length();
+    const bool still = std::fabs(state.vertical_velocity_m_s) < 0.25f && rot < 0.5f;
     if (want_down && low_thrust && still) {
         _landed_timer_s += dt;
         if (_landed_timer_s >= (require_low_thrust ? 1.0f : 3.0f)) _landed = true;
@@ -261,6 +276,58 @@ bool UAVVehicle::apply_failsafe_land(float dt) {
     update_land_detector(-LAND_SPEED, dt, state.altitude_valid);
     _target_altitude_m = state.altitude_m;
     return _landed;
+}
+
+bool UAVVehicle::yaw_abandoned() const {
+    if (!_matrix_mixer) return false;
+    const auto st = _matrix_mixer->allocation_status();
+    return st == control::AllocationStatus::NO_YAW || st == control::AllocationStatus::UNCONTROLLABLE;
+}
+
+void UAVVehicle::step(float dt) {
+    VehicleBase::step(dt);
+    if (!_motor_fdi_enabled || !_matrix_mixer || !is_armed()) return;
+    // After a failure that already costs yaw (or more), the vehicle spins and the
+    // detector's assumptions no longer hold: don't stack further verdicts on it.
+    const auto status = _matrix_mixer->allocation_status();
+    if (status != control::AllocationStatus::NOMINAL && status != control::AllocationStatus::DEGRADED) return;
+    // MANUAL doesn't run the land detector: there, flying = real collective.
+    const bool flying = _mode == UAVFlightMode::MANUAL ? _last_throttle > 0.2f : !_landed;
+    const int m = _motor_fdi.update(*_matrix_mixer, get_state().angular_velocity, _demands.throttle, dt, flying,
+                                    now_ms());
+    if (m >= 0) declare_motor_failed(static_cast<uint8_t>(m), _motor_fdi.last_cause());
+}
+
+void UAVVehicle::declare_motor_failed(uint8_t channel, control::MotorFailureDetector::Cause cause) {
+    if (!_matrix_mixer || _matrix_mixer->is_motor_failed(channel)) return;
+    if (!_matrix_mixer->set_motor_failed(channel)) return;
+    _last_failed_motor = static_cast<int8_t>(channel);
+    _motor_failure_ms = now_ms();
+    _motor_fdi.reset();
+
+    // The yaw integrator was fighting the failure: start clean. Roll/pitch keep
+    // theirs (the re-allocated mixer gives the same torque per unit demand).
+    _yaw_rate_pid.reset();
+
+    const auto status = _matrix_mixer->allocation_status();
+    // Enough collective left to hover with some margin for control?
+    const bool thrust_ok = _matrix_mixer->collective_limit() >= 1.15f * _hover_throttle;
+    const bool emergency = status != control::AllocationStatus::DEGRADED || !thrust_ok;
+    if (emergency) _motor_emergency = true;
+
+    char t[51];
+    std::snprintf(t, sizeof(t), "Motor %u failed (%s)", static_cast<unsigned>(channel + 1),
+                  control::motor_failure_cause_name(cause));
+    post_event(2 /* MAV_SEVERITY_CRITICAL */, t);
+    if (status == control::AllocationStatus::DEGRADED && thrust_ok) {
+        post_event(4 /* WARNING */, "Flying on remaining motors, yaw degraded: land");
+    } else if (status == control::AllocationStatus::NO_YAW) {
+        post_event(1 /* ALERT */, "No yaw control left: spinning, landing now");
+    } else if (status == control::AllocationStatus::UNCONTROLLABLE) {
+        post_event(0 /* EMERGENCY */, "Not enough motors left: emergency descent");
+    } else {
+        post_event(1 /* ALERT */, "Not enough thrust left: landing now");
+    }
 }
 
 } // namespace vehicles

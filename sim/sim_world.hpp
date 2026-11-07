@@ -14,6 +14,7 @@
 #include "sim/quad_sim.hpp"
 #include "sim/sub_sim.hpp"
 #include "sim/surface_sim.hpp"
+#include "vehicles/uav/uav_vehicle.hpp"
 #include "vehicles/vehicle_manager.hpp"
 #include <memory>
 
@@ -52,6 +53,11 @@ public:
             ++_swaps;
         }
         _body = make_body(type, frame);
+        if (auto* quad = dynamic_cast<QuadModel*>(_body.get())) {
+            // Hexa, octa, ...: take the motor layout from the firmware's own mixer.
+            auto* uav = dynamic_cast<vehicles::UAVVehicle*>(_vm.get_active_vehicle());
+            if (uav && uav->get_matrix_mixer()) quad->configure_frame(*uav->get_matrix_mixer());
+        }
         _body->place(n, e, yaw);
         _type = type;
         _frame = frame;

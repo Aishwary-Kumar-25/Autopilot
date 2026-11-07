@@ -413,7 +413,7 @@ bool GcsLink::set_base_mode(uint8_t base_mode, uint32_t custom) {
 // ---------------------------------------------------------------- events
 
 void GcsLink::detect_events() {
-    const vehicles::VehicleBase* v = _vm->get_active_vehicle();
+    vehicles::VehicleBase* v = _vm->get_active_vehicle();
     if (v != _last_vehicle) {
         if (_last_vehicle != nullptr) {
             // A new vehicle object starts with built-in defaults: re-apply tuning.
@@ -430,6 +430,10 @@ void GcsLink::detect_events() {
     }
     if (!v) return;
 
+    // Vehicle events (motor failure, ...)
+    vehicles::VehicleBase::Event ev;
+    while (v->pop_event(ev)) send_statustext(static_cast<MavSeverity>(ev.severity), ev.text);
+
     const bool armed = _vm->is_armed();
     if (armed != _last_armed) {
         send_statustext(MAV_SEVERITY_INFO, armed ? "Armed" : "Disarmed");
@@ -443,9 +447,10 @@ void GcsLink::detect_events() {
         if (fs != control::FailsafeAction::NONE) {
             const uint8_t r = v->get_failsafe().reasons();
             char t[51];
-            std::snprintf(t, sizeof(t), "Failsafe %s:%s%s%s%s", fs == control::FailsafeAction::LAND ? "LAND" : "TERMINATE",
+            std::snprintf(t, sizeof(t), "Failsafe %s:%s%s%s%s%s", fs == control::FailsafeAction::LAND ? "LAND" : "TERMINATE",
                           (r & control::FS_RC_LOSS) ? " RC" : "", (r & control::FS_BATTERY) ? " BATT" : "",
-                          (r & control::FS_ESTIMATOR) ? " EKF" : "", (r & control::FS_NO_IMU) ? " NO_IMU" : "");
+                          (r & control::FS_ESTIMATOR) ? " EKF" : "", (r & control::FS_NO_IMU) ? " NO_IMU" : "",
+                          (r & control::FS_MOTOR) ? " MOTOR" : "");
             send_statustext(fs == control::FailsafeAction::TERMINATE ? MAV_SEVERITY_EMERGENCY : MAV_SEVERITY_CRITICAL, t);
         } else {
             send_statustext(MAV_SEVERITY_NOTICE, "Failsafe cleared");

@@ -1,8 +1,9 @@
 #pragma once
 /**
  * Shared SITL rig for closed-loop tests: the real flight stack (VehicleManager,
- * shared SensorManager + SensorFusion, UAV controller, failsafe, Quad-X mixer)
- * flying the simulated quad in sim/quad_sim.hpp.
+ * shared SensorManager + SensorFusion, UAV controller, failsafe, matrix mixer)
+ * flying the simulated multirotor in sim/quad_sim.hpp (quad by default, or a
+ * hexa/octa built from the same mixer geometry).
  */
 #include "hal/posix/posix_hal.hpp"
 #include "sim/quad_sim.hpp"
@@ -29,7 +30,8 @@ struct Rig {
     bool rc_on{true};
     float rc[4]{0, 0, 0, 0.5f};   // roll, pitch, yaw, throttle sticks
 
-    explicit Rig(bool with_gps = false) {
+    /** rotors: 4 = the default quad; 6/8 = hexa/octa-X from the same mixer presets. */
+    explicit Rig(bool with_gps = false, uint8_t rotors = 4) {
         hal.time().set_manual_time_mode(true);
         hal.time().advance_time_ms(1000);
         ctx.model = &quad;
@@ -47,13 +49,25 @@ struct Rig {
             vm->get_sensors()->register_sensor(gps);
         }
         uav = dynamic_cast<vehicles::UAVVehicle*>(vm->get_active_vehicle());
+        if (rotors != 4 && uav) {
+            vm->configure_uav_rotors(rotors);
+            quad.configure_frame(*uav->get_matrix_mixer());   // hexa/octa geometry from the mixer
+        }
     }
+
+    /** Kill (health 0) or damage a motor in the simulated airframe. */
+    void fail_motor(int i, double health = 0.0) { quad.motor_health[i] = health; }
+    /** Feed every motor's RPM to the flight controller, like ESC telemetry would. */
+    bool esc_telemetry{false};
 
     void step() {
         if (rc_on) vm->set_user_inputs(rc[0], rc[1], rc[2], rc[3]);
+        if (esc_telemetry && uav) {
+            for (int i = 0; i < quad.n_motors; ++i) uav->report_esc_rpm(static_cast<uint8_t>(i), float(quad.rpm(i)));
+        }
         vm->step(LOOP_MS * 1e-3f);
-        double cmd[4];
-        for (int i = 0; i < 4; ++i) {
+        double cmd[sim::QuadModel::MAX_MOTORS]{};
+        for (int i = 0; i < quad.n_motors; ++i) {
             const uint16_t us = hal.pwm().is_enabled() ? hal.pwm().get_channel(i) : 1000;
             cmd[i] = (static_cast<double>(us) - 1000.0) / 1000.0;
         }

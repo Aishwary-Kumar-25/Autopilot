@@ -52,6 +52,21 @@ enum class MixerPreset {
 };
 
 /**
+ * What the mixer can still do after one or more motors were declared failed
+ * (see ActuatorMatrixMixer::set_motor_failed()).
+ */
+enum class AllocationStatus : uint8_t {
+    NOMINAL = 0,      // every motor healthy, original allocation
+    DEGRADED = 1,     // motor(s) lost, roll/pitch/thrust/yaw re-allocated to the rest
+                      // (yaw authority usually reduced: it is given up first)
+    NO_YAW = 2,       // motor(s) lost, yaw is uncontrollable: roll/pitch/thrust only
+                      // (e.g. a quad on 3 motors: it spins, but can stay upright and land)
+    UNCONTROLLABLE = 3 // not enough motors left to hold roll/pitch and thrust
+};
+
+const char* allocation_status_name(AllocationStatus s);
+
+/**
  * @brief Generalized Actuator Matrix Mixer supporting 2 to 16 thrusters/motors.
  * Replaces fixed hardcoded mixers with dynamic control allocation:
  *   u = B * tau
@@ -111,6 +126,45 @@ public:
      */
     void get_normalized_outputs(const ControlDemands& demands, float* out_values, size_t max_len) const;
 
+    // ---------------- Motor failure: control re-allocation ----------------
+
+    /**
+     * Declare multirotor motor `channel` failed (dead ESC/motor, lost propeller)
+     * or healthy again, and re-solve the allocation for the motors that are left.
+     *
+     * The re-allocation keeps the healthy torque/thrust per unit demand, so the
+     * attitude and altitude loops need no re-tuning:
+     *   rows' = E^T (E E^T)^-1 G
+     * where E is the remaining motors' effectiveness (their nominal rows) and G
+     * the healthy frame's Gram matrix R^T R. Roll, pitch and yaw come from the
+     * full 4-axis solve; the collective comes from a roll/pitch/thrust-only
+     * solve, so hovering never depends on yaw (yaw is what gets given up). When
+     * the 4-axis problem is singular (a quad on 3 motors) yaw is dropped.
+     *
+     * Only for unidirectional (multirotor) outputs. Returns false if the channel
+     * is out of range or not a unidirectional motor.
+     */
+    bool set_motor_failed(uint8_t channel, bool failed = true);
+    /** Back to the original allocation with every motor healthy. */
+    void clear_motor_failures();
+    uint16_t failed_motor_mask() const { return _failed_mask; }
+    bool is_motor_failed(uint8_t channel) const {
+        return channel < hal::PWMOutput::MAX_CHANNELS && (_failed_mask & (1u << channel));
+    }
+    AllocationStatus allocation_status() const { return _alloc_status; }
+    /** Healthy-original row of a motor (before any re-allocation). */
+    const ActuatorConfig& get_nominal_config(uint8_t channel) const;
+    /**
+     * Highest collective demand the remaining motors can deliver (1.0 when
+     * healthy; e.g. ~0.67 for a hexa on 5 motors: hover needs to stay below it).
+     */
+    float collective_limit() const { return _collective_limit; }
+
+    /** Normalised outputs of the last output_to_actuators() call (0 when disarmed). */
+    float last_output(uint8_t channel) const {
+        return channel < hal::PWMOutput::MAX_CHANNELS ? _last_outputs[channel] : 0.0f;
+    }
+
     /**
      * @brief Generate DroneCAN RawCommand frame (DSDL 1030) for CAN-based ESCs.
      */
@@ -125,6 +179,15 @@ private:
     uint8_t _num_channels{0};
     MixerPreset _current_preset{MixerPreset::CUSTOM};
     std::array<ActuatorConfig, hal::PWMOutput::MAX_CHANNELS> _actuators;
+
+    // Motor failure handling: _nominal holds the healthy rows while any motor is failed.
+    std::array<ActuatorConfig, hal::PWMOutput::MAX_CHANNELS> _nominal;
+    uint16_t _failed_mask{0};
+    AllocationStatus _alloc_status{AllocationStatus::NOMINAL};
+    float _collective_limit{1.0f};
+    float _last_outputs[hal::PWMOutput::MAX_CHANNELS]{};
+    void reset_failures();
+    void reallocate();
 
     void setup_rov_3_simple();
     void setup_rov_4_basic();

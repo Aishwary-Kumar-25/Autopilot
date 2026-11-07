@@ -70,6 +70,17 @@ public:
     const control::Failsafe& get_failsafe() const { return _failsafe; }
     /** Battery voltage from a power module / ADC; < 0 = no monitor. */
     void set_battery_voltage(float v) { _battery_voltage = v; }
+    /**
+     * Vehicle events for the ground station (e.g. "Motor 2 failed"): a small
+     * queue the GCS link drains with pop_event(). Oldest events are dropped
+     * when it is full.
+     */
+    struct Event {
+        uint8_t severity{6};   // MAV_SEVERITY_* (0 = emergency ... 6 = info)
+        char text[51]{};
+    };
+    bool pop_event(Event& out);
+
     /** Carry the RC link state over when VehicleManager swaps vehicle profiles. */
     void inherit_rc_link(const VehicleBase& other) {
         _last_rc_ms = other._last_rc_ms;
@@ -99,6 +110,17 @@ protected:
     float _battery_voltage{-1.0f};
 
     uint32_t now_ms() const;
+    void post_event(uint8_t severity, const char* text);
+
+    static constexpr uint8_t EVENT_QUEUE = 4;
+    Event _events[EVENT_QUEUE];
+    uint8_t _event_head{0}, _event_count{0};
+
+    /**
+     * True when an actuator failure means the vehicle must land now (the
+     * failsafe then commits to LAND). Default: never.
+     */
+    virtual bool actuator_failure_needs_land() const { return false; }
 
     /**
      * Vehicle-specific "sticks are safe" arming check (e.g. throttle low on a

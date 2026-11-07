@@ -9,11 +9,18 @@
  * barometric altitude, body-frame magnetic field), with noise.
  *
  * Frames: NED earth, FRD body (same convention as drivers/sensor_interface.hpp).
- * Motor order and spin directions match the Quad-X mixer:
+ * Default motor order and spin directions match the Quad-X mixer:
  *   0 FR (CCW), 1 RL (CCW), 2 FL (CW), 3 RR (CW)
+ * Any other multirotor layout (hexa, octa, ...) can be taken from the mixer's
+ * own allocation rows with set_layout(), so the simulated frame always matches
+ * the firmware's geometry.
  *
  * Airframe (a typical 450-class quad): 1.2 kg, 4 x 6 N max thrust (hover ~49%),
  * 0.127 m arm, motor time constant 30 ms.
+ *
+ * Fault injection: motor_health[i] scales motor i's thrust (0 = dead motor or
+ * ESC, 0.5 = damaged prop), and every motor reports its RPM like an ESC with
+ * telemetry would (rpm()).
  */
 #include "drivers/sensor_interface.hpp"
 #include "sim/sim_body.hpp"
@@ -22,6 +29,8 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <algorithm>
+#include "control/actuator_matrix_mixer.hpp"
 
 namespace autopilot {
 namespace sim {
@@ -39,15 +48,71 @@ public:
     double drag_cda = 0.0;        // m^2, bluff-body drag area (quadratic); 0 = off
     double rho = 1.225;           // kg/m^3
     V3 wind;                      // NED, m/s (air moves at this velocity)
+    double yaw_drag = 4e-4;       // N m per (rad/s)^2: frame + prop drag against a fast spin
+    double max_rpm = 12000.0;     // RPM at full thrust (telemetry only)
 
-    double thrust[4]{0, 0, 0, 0};
+    // Geometry: motor positions (FRD, m) and yaw reaction sign (+1 CCW prop).
+    static constexpr int MAX_MOTORS = 16;
+    int n_motors = 4;
+    double mx[MAX_MOTORS]{}, my[MAX_MOTORS]{}, ys[MAX_MOTORS]{};
+    double motor_health[MAX_MOTORS];   // thrust scale, 1 = healthy, 0 = dead
+
+    double thrust[MAX_MOTORS]{};
     bool on_ground = true;
     double max_touchdown_speed = 0.0;
+
+    QuadModel() {
+        for (double& h : motor_health) h = 1.0;
+        const double a = arm * 0.70710678;
+        static const double px[4] = {+1, -1, +1, -1}, py[4] = {+1, -1, -1, +1}, ysq[4] = {+1, +1, -1, -1};
+        for (int i = 0; i < 4; ++i) { mx[i] = px[i] * a; my[i] = py[i] * a; ys[i] = ysq[i]; }
+    }
+
+    /**
+     * Take the motor layout from the mixer's allocation rows: a motor's roll
+     * coefficient is -y, its pitch coefficient +x (FRD), and the sign of its yaw
+     * coefficient is its prop's reaction torque. Each motor sits arm_m from the centre.
+     */
+    void set_layout(const control::ActuatorMatrixMixer& mixer, double arm_m) {
+        arm = arm_m;
+        n_motors = std::min<int>(mixer.get_num_channels(), MAX_MOTORS);
+        for (int i = 0; i < n_motors; ++i) {
+            const auto& a = mixer.get_actuator_config(static_cast<uint8_t>(i));
+            const double x = a.pitch, y = -a.roll, n = std::sqrt(x * x + y * y);
+            mx[i] = n > 1e-6 ? arm_m * x / n : 0.0;
+            my[i] = n > 1e-6 ? arm_m * y / n : 0.0;
+            ys[i] = a.yaw >= 0.0f ? 1.0 : -1.0;
+        }
+    }
+
+    /**
+     * Match the airframe to the firmware's multirotor mixer. Quad-X keeps the
+     * default 450-class quad; other rotor counts get a bigger frame with the same
+     * motors (0.20 m arms, mass growing with the rotor count so hover stays ~49%).
+     */
+    void configure_frame(const control::ActuatorMatrixMixer& mixer) {
+        if (mixer.get_num_channels() == 4) return;
+        const double k = mixer.get_num_channels() / 4.0;
+        set_layout(mixer, 0.20);
+        mass = 1.2 * k;
+        inertia = V3(0.019 * k, 0.019 * k, 0.032 * k);
+    }
+
+    /**
+     * What an ESC with telemetry would report for motor i (RPM). A motor with
+     * health 0 is a dead motor/ESC: it reports 0 at once (a burnt motor or a
+     * desynced ESC stops commutating). Partial health = damaged prop: the motor
+     * still turns at its commanded speed, only the thrust is missing.
+     */
+    double rpm(int i) const {
+        if (motor_health[i] <= 0.0) return 0.0;
+        return max_rpm * std::sqrt(std::fmax(0.0, thrust[i] / std::fmax(1e-6, motor_health[i])) / max_thrust);
+    }
 
     const char* name() const override { return "quad"; }
     double load() const override {
         double m = 0;
-        for (double t : thrust) m += t / (4.0 * max_thrust);
+        for (int i = 0; i < n_motors; ++i) m += thrust[i] / (n_motors * max_thrust);
         return m;
     }
     void place(double north, double east, double yaw) override {
@@ -55,30 +120,27 @@ public:
         for (double& t : thrust) t = 0.0;
         on_ground = true;
     }
-    /** Quad-X ESCs on channels 0..3 (unidirectional, 1000 us = stopped). */
+    /** Multirotor ESCs on channels 0..n_motors-1 (unidirectional, 1000 us = stopped). */
     void step_pwm(const uint16_t* pwm_us, int n, double dt) override {
-        double cmd[4];
-        for (int i = 0; i < 4; ++i) cmd[i] = unidir(pwm_us, n, i);
+        double cmd[MAX_MOTORS]{};
+        for (int i = 0; i < n_motors; ++i) cmd[i] = unidir(pwm_us, n, i);
         step(cmd, dt);
     }
 
-    /** Advance by dt with motor commands in [0,1]. */
-    void step(const double cmd[4], double dt) {
-        // Motor positions (FRD) and yaw sign (+1 CCW props -> positive yaw reaction)
-        const double a = arm * 0.70710678;
-        static const double px[4] = {+1, -1, +1, -1}, py[4] = {+1, -1, -1, +1}, ys[4] = {+1, +1, -1, -1};
-
+    /** Advance by dt with motor commands in [0,1] (n_motors of them). */
+    void step(const double* cmd, double dt) {
         V3 torque;
         double total = 0;
-        for (int i = 0; i < 4; ++i) {
-            const double c = std::fmax(0.0, std::fmin(1.0, cmd[i]));
+        for (int i = 0; i < n_motors; ++i) {
+            const double c = std::fmax(0.0, std::fmin(1.0, cmd[i])) * std::fmax(0.0, motor_health[i]);
             thrust[i] = lag(thrust[i], c * max_thrust, motor_tau, dt);
             total += thrust[i];
-            const V3 r(px[i] * a, py[i] * a, 0.0);
+            const V3 r(mx[i], my[i], 0.0);
             torque = torque + r.cross(V3(0, 0, -thrust[i]));
             torque.z += ys[i] * kq * thrust[i];
         }
         torque = torque - omega * 0.002; // small rotational damping
+        torque.z -= yaw_drag * omega.z * std::fabs(omega.z);
 
         // Translational dynamics (NED)
         const V3 air = vel - wind;   // air-relative velocity

@@ -14,6 +14,7 @@
  *   ./autopilot_sitl --gcs 192.168.1.20:14550 --mode alt_hold
  *   ./autopilot_sitl --rc-neutral          # arm/hover without a joystick
  *   ./autopilot_sitl --signing-passphrase "my secret"   # only signed MAVLink accepted
+ *   ./autopilot_sitl --frame 6 --fail-motor 3@20         # hexa, motor 3 dies 20 s after arming
  *
  * Parameters and the signing key are saved in autopilot_sitl.eeprom (the
  * SITL's flash), so tuning set from QGC is still there next run.
@@ -31,6 +32,7 @@
 #include "hal/posix/posix_hal.hpp"
 #include "hal/posix/udp_link.hpp"
 #include "sim/sim_world.hpp"
+#include "vehicles/uav/uav_vehicle.hpp"
 #include "vehicles/vehicle_manager.hpp"
 
 #include <chrono>
@@ -79,6 +81,10 @@ void usage(const char* argv0) {
         "                        rover, boat  MANUAL / HEADING_HOLD / SPEED_HOLD\n"
         "                        sub   MANUAL / STABILIZE / DEPTH_HOLD\n"
         "  --current N,E       water current for the boat, m/s (default 0,0)\n"
+        "  --frame N           multirotor rotor count: 4 quad, 6 hexa, 8 octa (sets UAV_ROTORS)\n"
+        "  --fail-motor M@S    kill motor M (1-based) S seconds after arming, to watch the\n"
+        "                      motor-failure handling (e.g. --fail-motor 3@20)\n"
+        "  --esc-telemetry     simulated ESCs report RPM to the flight controller\n"
         "  --rc-neutral        feed centred sticks when no MANUAL_CONTROL arrives\n"
         "  --duration S        exit after S seconds (default: run until Ctrl-C)\n"
         "  --storage FILE      saved settings file (default autopilot_sitl.eeprom, 'none' = don't save)\n"
@@ -102,6 +108,10 @@ int main(int argc, char** argv) {
     bool vtype_given = false;
     double current_n = 0.0, current_e = 0.0;
     double duration_s = 0.0;
+    int frame = 0;                 // 0 = keep UAV_ROTORS as configured / saved
+    int fail_motor = -1;           // 0-based, -1 = none
+    double fail_after_s = 0.0;
+    bool esc_telemetry = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -132,6 +142,16 @@ int main(int argc, char** argv) {
         } else if (a == "--current") {
             const std::string v = next();
             if (std::sscanf(v.c_str(), "%lf,%lf", &current_n, &current_e) != 2) { usage(argv[0]); return 2; }
+        } else if (a == "--frame") {
+            frame = std::atoi(next());
+            if (frame < 3 || frame > 16) { usage(argv[0]); return 2; }
+        } else if (a == "--fail-motor") {
+            const std::string v = next();
+            int m = 0;
+            if (std::sscanf(v.c_str(), "%d@%lf", &m, &fail_after_s) < 1 || m < 1) { usage(argv[0]); return 2; }
+            fail_motor = m - 1;
+        } else if (a == "--esc-telemetry") {
+            esc_telemetry = true;
         } else if (a == "--rc-neutral") {
             rc_neutral = true;
         } else if (a == "--duration") {
@@ -173,8 +193,6 @@ int main(int argc, char** argv) {
                 std::printf("  note: no sub physics for %u thrusters, simulating the %d-thruster frame\n",
                             vm.get_active_actuator_count(), sub->modelled_layout);
         }
-        if (world.as<sim::QuadModel>() && vm.get_active_actuator_count() != 4)
-            std::printf("  note: quad physics models 4 rotors; outputs beyond 4 are not simulated\n");
     };
     apply_world_settings();
     auto* sm = vm.get_sensors();
@@ -209,6 +227,9 @@ int main(int argc, char** argv) {
     if (vtype_given && vm.get_active_type() != vtype) {   // --vehicle beats a saved VEHICLE_TYPE
         std::string why;
         vm.switch_vehicle(vtype, why);
+    }
+    if (frame > 0 && vm.get_active_type() == vehicles::VehicleType::UAV_MULTICOPTER) {
+        vm.configure_uav_rotors(static_cast<uint8_t>(frame));   // --frame beats a saved UAV_ROTORS
     }
     comms::set_vehicle_mode(vm, mode);   // after load: a saved VEHICLE_TYPE may have replaced the vehicle
     if (world.sync()) apply_world_settings();   // physics body for the vehicle actually running
@@ -254,6 +275,9 @@ int main(int argc, char** argv) {
     auto next_tick = clock::now();
     uint64_t ticks = 0;
     uint32_t last_manual = 0, last_manual_ms = 0;
+    uint64_t armed_ticks = 0;
+    bool motor_killed = false;
+    int8_t reported_failure = -1;
     const uint64_t end_ticks = duration_s > 0 ? static_cast<uint64_t>(duration_s * 1e6 / LOOP_US) : 0;
 
     while (!g_stop && (end_ticks == 0 || ticks < end_ticks)) {
@@ -273,7 +297,32 @@ int main(int argc, char** argv) {
             vm.set_user_inputs(0.0f, 0.0f, 0.0f, alt_hold ? 0.5f : 0.0f);
         }
 
+        // Simulated ESC telemetry (RPM) into the flight controller.
+        auto* uav = dynamic_cast<vehicles::UAVVehicle*>(vm.get_active_vehicle());
+        auto* quad = world.as<sim::QuadModel>();
+        if (esc_telemetry && uav && quad) {
+            for (int m = 0; m < quad->n_motors; ++m) uav->report_esc_rpm(static_cast<uint8_t>(m), float(quad->rpm(m)));
+        }
+
         vm.step(LOOP_US * 1e-6f);
+
+        // Motor failure injection: --fail-motor M@S, S seconds after arming.
+        armed_ticks = vm.is_armed() ? armed_ticks + 1 : 0;
+        if (quad && fail_motor >= 0 && !motor_killed && fail_motor < quad->n_motors &&
+            armed_ticks * LOOP_US * 1e-6 >= fail_after_s && !quad->on_ground) {
+            quad->motor_health[fail_motor] = 0.0;
+            motor_killed = true;
+            std::printf("  SIM: motor %d killed at %.2f m\n", fail_motor + 1, quad->altitude());
+        }
+        if (uav && uav->last_failed_motor() != reported_failure) {
+            reported_failure = uav->last_failed_motor();
+            if (reported_failure >= 0) {
+                std::printf("  FC: motor %d declared failed (%s), mixer %s%s\n", reported_failure + 1,
+                            control::motor_failure_cause_name(uav->motor_failure_detector().last_cause()),
+                            control::allocation_status_name(uav->get_matrix_mixer()->allocation_status()),
+                            uav->motor_emergency() ? ", landing" : "");
+            }
+        }
 
         if (world.sync()) {   // VEHICLE_TYPE / frame changed from the GCS: new physics body
             std::printf("  simulator: now a %s (%s)\n", world.body().name(), vm.get_active_type_name());

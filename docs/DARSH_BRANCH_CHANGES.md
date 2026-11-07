@@ -392,3 +392,67 @@ force isn't drag); for them a "no sideways / vertical velocity" constraint would
 fix the ~4° nose-up at hard launch seen in commit 7. On real hardware the
 accelerometer noise and mcoef should be checked from a log of the first flights.
 
+
+# Commit 9: survive a motor failure in flight (Amay's idea)
+
+A multirotor now notices a dead motor (dead ESC/motor, lost propeller) in about
+70 ms, re-allocates control to the motors that are left, and either keeps flying
+(hexa, octa) or gives up yaw and lands (quad). Details: `docs/MOTOR_FAILURE.md`.
+
+**Detection** (`control/motor_failure_detector.*`, any frame, no airframe model):
+motor i's healthy mixer row says which way it tips the vehicle. When the motor
+commands (delayed by the motor spin-up lag) push along that direction but the
+body angular-accelerates the other way for 30 ms, motor i is not delivering.
+Comparing with the *lagged* command is what keeps hard stick reversals from
+looking like a failure. A slower rule catches a motor pinned near full while the
+others sit far below it in steady flight, and when ESCs report RPM, "commanded
+but not turning" for 50 ms is a third, conclusive rule.
+
+**Re-allocation** (`ActuatorMatrixMixer::set_motor_failed()`): the remaining
+motors' rows are re-solved as `E^T (E E^T)^-1 G` (E = their healthy rows, G =
+the healthy frame's `R^T R`), so a unit demand still gives the healthy torque and
+thrust and no gain needs re-tuning. Roll/pitch/yaw come from the 4-axis solve,
+the collective from a roll/pitch/thrust-only solve so that hovering never depends
+on yaw; if the 4-axis problem is singular (quad on 3) yaw is dropped. The
+priority desaturation was generalised to uneven collective columns (on a healthy
+frame it gives exactly the old outputs; the old mixer tests pass unchanged), and
+yaw may now move the collective by at most 0.1, so a yaw demand the frame can't
+meet doesn't climb or sink the vehicle.
+
+**Reaction** (`UAVVehicle`): hexa/octa (`DEGRADED`) stay under pilot control with
+a GCS warning to land; a quad (`NO_YAW`), not enough thrust left, or
+`UNCONTROLLABLE` triggers failsafe LAND (new reason `FS_MOTOR`, committed). With
+yaw abandoned the yaw loop is off and the land detector ignores the spin. A dead
+motor is commanded to idle. STATUSTEXT tells the GCS (`Motor 3 failed (lost
+thrust)` + what happens next, `Failsafe LAND: MOTOR`), through a small event
+queue on `VehicleBase` the GCS link drains. Failures stay latched until the next
+arm. Parameter `MOT_FAIL_DETECT` (0/1, saved) turns detection off.
+
+**Simulator.** `QuadModel` takes any rotor layout from the mixer
+(`configure_frame()`, used by the test rig and `SimWorld`, so `--frame 6` /
+`UAV_ROTORS=6` really flies a hexa), has per-motor `motor_health[]` fault
+injection, simulated ESC RPM, and yaw aero drag (a spinning quad settles at
+~20 rad/s instead of spinning up without limit). `autopilot_sitl` gets
+`--frame N`, `--fail-motor M@S` and `--esc-telemetry`.
+
+**Results** (`tests/test_motor_failure.cpp`, ALT_HOLD hover at ~2.5 m):
+
+| Frame, failure | detected | then | without detection |
+|---|---|---|---|
+| hexa, any of 6 motors | 72-76 ms | holds altitude ±0.15 m, tilt < 4°, yaw drifts ~0.5 rad/s, pilot flies and lands it (1.1 m/s) | crashes, 3.0 m/s, 23° |
+| octa, any of 8 | 72-76 ms | tilt < 3°, keeps flying | flies, but uncorrected |
+| quad, any of 4 | 64-68 ms | spins at ~20 rad/s, stays upright (max 32-36°), lands itself at 0.6-0.8 m/s, disarms | tumbles, 5.9 m/s, 69° |
+| hexa with ESC telemetry | 52 ms (ESC rule) | as above | |
+
+No false alarm in the air in 72 hard-flying runs (quad/hexa/octa, ALT_HOLD and
+STABILIZE, full-stick bangs in all axes every 0.25-0.75 s, 30-40 s each); the
+test keeps two of them. `tools/sitl_motor_failure_check.py --frame 6|4|8` checks
+the same over MAVLink against the real-time SITL (all three pass).
+
+**Limits / next.** The quad case is a controlled crash-landing, not hover: two
+motors on one diagonal give only ~1.0x the weight. A dedicated spinning-quad
+controller (Mueller & D'Andrea's "relaxed hover") could hold altitude. Detection
+assumes the rotor plane is flat (no tilted motors) and is not done for ROV
+thrusters. A lost propeller makes an ESC report HIGHER RPM; only the lost-thrust
+rule catches that. Thresholds (`alpha_min` 5 rad/s²) were tuned on the simulated
+frames; check them against logs of real flights.

@@ -4,6 +4,7 @@
 #include "uav_mixer.hpp"
 #include "math/pid.hpp"
 #include "math/biquad_filter.hpp"
+#include "control/motor_failure_detector.hpp"
 #include <algorithm>
 
 namespace autopilot {
@@ -43,6 +44,30 @@ public:
     uint8_t get_rotor_count() const { return _rotor_count; }
 
     control::ActuatorMatrixMixer* get_matrix_mixer() { return _matrix_mixer; }
+
+    /** Controller step + motor failure monitoring (detection acts on the next step). */
+    void step(float dt) override;
+
+    // ---- Motor failure handling ----
+    /**
+     * After every step the motor failure detector watches the motor commands and
+     * the body's angular acceleration (and ESC RPM, if reported). On a detected
+     * failure the mixer re-allocates control to the remaining motors:
+     *   - DEGRADED (hexa, octa, ...): keeps flying under pilot control, yaw
+     *     authority reduced; a GCS warning recommends landing.
+     *   - NO_YAW (quad on 3 motors), not enough thrust left, or UNCONTROLLABLE:
+     *     failsafe LAND (committed), yaw abandoned, the vehicle spins down.
+     * Failures stay latched until the next arm.
+     */
+    control::MotorFailureDetector& motor_failure_detector() { return _motor_fdi; }
+    void set_motor_failure_detection(bool enabled) { _motor_fdi_enabled = enabled; }
+    /** Declare a motor failed from outside (ESC fault flag, operator, test). */
+    void declare_motor_failed(uint8_t channel, control::MotorFailureDetector::Cause cause);
+    /** ESC telemetry in: forwarded to the detector. */
+    void report_esc_rpm(uint8_t channel, float rpm) { _motor_fdi.report_esc_rpm(channel, rpm, now_ms()); }
+    int8_t last_failed_motor() const { return _last_failed_motor; }
+    uint32_t motor_failure_time_ms() const { return _motor_failure_ms; }
+    bool motor_emergency() const { return _motor_emergency; }
 
     /** Learned hover throttle (starts at 0.5, adapts slowly while hovering in ALT_HOLD). */
     float get_hover_throttle() const { return _hover_throttle; }
@@ -87,6 +112,7 @@ protected:
     void on_arm() override;
     void on_disarm() override;
     bool apply_failsafe_land(float dt) override;
+    bool actuator_failure_needs_land() const override { return _motor_emergency; }
 
 private:
     UAVFlightMode _mode{UAVFlightMode::STABILIZE};
@@ -108,6 +134,14 @@ private:
     math::BiquadFilter _gyro_lpf[3];
     math::BiquadFilter _gyro_notch[3];
     math::Vector3f filtered_rates();
+
+    control::MotorFailureDetector _motor_fdi;
+    bool _motor_fdi_enabled{true};
+    bool _motor_emergency{false};
+    int8_t _last_failed_motor{-1};
+    uint32_t _motor_failure_ms{0};
+    /** Yaw can't be controlled (quad on 3 motors): no yaw loop, spin allowed. */
+    bool yaw_abandoned() const;
 
     float _hover_throttle{0.5f};
     float _last_throttle{0.0f};
