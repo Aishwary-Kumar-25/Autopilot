@@ -8,6 +8,10 @@
  *   ./autopilot_sitl                       # sends to 127.0.0.1:14550 (QGC default)
  *   ./autopilot_sitl --gcs 192.168.1.20:14550 --mode alt_hold
  *   ./autopilot_sitl --rc-neutral          # arm/hover without a joystick
+ *   ./autopilot_sitl --signing-passphrase "my secret"   # only signed MAVLink accepted
+ *
+ * Parameters and the signing key are saved in autopilot_sitl.eeprom (the
+ * SITL's flash), so tuning set from QGC is still there next run.
  *
  * Pilot input: MANUAL_CONTROL from a joystick or QGC's virtual joystick
  * (Application Settings > General > Virtual Joystick). Without any RC the
@@ -16,6 +20,8 @@
  * See docs/MAVLINK_QGC.md.
  */
 #include "comms/gcs_link.hpp"
+#include "comms/settings.hpp"
+#include "hal/posix/file_storage.hpp"
 #include "comms/vehicle_params.hpp"
 #include "hal/posix/posix_hal.hpp"
 #include "hal/posix/udp_link.hpp"
@@ -66,6 +72,10 @@ void usage(const char* argv0) {
         "  --mode M            manual | stabilize | alt_hold (default stabilize)\n"
         "  --rc-neutral        feed centred sticks when no MANUAL_CONTROL arrives\n"
         "  --duration S        exit after S seconds (default: run until Ctrl-C)\n"
+        "  --storage FILE      saved settings file (default autopilot_sitl.eeprom, 'none' = don't save)\n"
+        "  --wipe              start from factory defaults (erases the settings file)\n"
+        "  --signing-passphrase P  install MAVLink signing key SHA-256(P) (same as MAVProxy) and save it\n"
+        "  --signing-off       remove the saved signing key\n"
         "  --quiet             no 1 Hz console status line\n",
         argv0);
 }
@@ -77,7 +87,8 @@ int main(int argc, char** argv) {
     uint16_t gcs_port = 14550, local_port = 0;
     uint8_t sysid = 1;
     uint32_t mode = 1;
-    bool rc_neutral = false, quiet = false;
+    bool rc_neutral = false, quiet = false, wipe = false, signing_off = false;
+    std::string storage_path = "autopilot_sitl.eeprom", passphrase;
     double duration_s = 0.0;
 
     for (int i = 1; i < argc; ++i) {
@@ -102,6 +113,14 @@ int main(int argc, char** argv) {
             rc_neutral = true;
         } else if (a == "--duration") {
             duration_s = std::atof(next());
+        } else if (a == "--storage") {
+            storage_path = next();
+        } else if (a == "--wipe") {
+            wipe = true;
+        } else if (a == "--signing-passphrase") {
+            passphrase = next();
+        } else if (a == "--signing-off") {
+            signing_off = true;
         } else if (a == "--quiet") {
             quiet = true;
         } else {
@@ -132,7 +151,6 @@ int main(int argc, char** argv) {
     sm->register_sensor(std::make_shared<sim::SimBaro>(&ctx));
     sm->register_sensor(std::make_shared<sim::SimCompass>(&ctx));
     sm->register_sensor(std::make_shared<sim::SimGPS>(&ctx)); // 10 Hz, 100 ms latency
-    comms::set_vehicle_mode(vm, mode);
     SimBattery battery;
 
     // ---- ground station link ----
@@ -143,13 +161,54 @@ int main(int argc, char** argv) {
     }
     comms::ParamStore params;
     comms::register_vehicle_params(params, vm);
+
+    // ---- saved settings (the SITL's "flash") ----
+    std::unique_ptr<hal::FileStorage> storage;
+    if (storage_path != "none") {
+        storage = std::make_unique<hal::FileStorage>(storage_path);
+        if (wipe) storage->wipe();
+        if (!storage->open()) {
+            std::fprintf(stderr, "storage: can't read %s\n", storage_path.c_str());
+            return 1;
+        }
+    }
+    comms::Settings settings(&params, storage.get());
+    const auto loaded = settings.load();
+    comms::set_vehicle_mode(vm, mode);   // after load: a saved VEHICLE_TYPE may have replaced the vehicle
+
+    comms::mavlink::Signing signing;
+    signing.load(storage.get());
+    if (!passphrase.empty()) {
+        uint8_t key[comms::mavlink::Signing::KEY_LEN];
+        comms::mavlink::Signing::key_from_passphrase(passphrase.c_str(), key);
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        signing.set_key(key, comms::mavlink::Signing::timestamp_from_unix(
+                                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(now).count())));
+    } else if (signing_off) {
+        signing.disable();
+    }
+    if (storage && (!passphrase.empty() || signing_off)) {
+        signing.save(storage.get());
+        storage->flush();
+    }
+
     comms::GcsLink::Config cfg;
     cfg.sysid = sysid;
+    cfg.trusted_link = true;   // SITL on this PC: SETUP_SIGNING may install a key (as over USB)
     comms::GcsLink link(&udp, &vm, &params, cfg);
+    link.set_signing(&signing);
+    link.set_settings(&settings);
     link.send_statustext(comms::mavlink::MAV_SEVERITY_INFO, "E-Club autopilot SITL ready");
 
     std::printf("autopilot_sitl: MAVLink v2 sysid %u, UDP local port %u -> %s:%u (%zu params)\n", sysid,
                 udp.local_port(), gcs_host.c_str(), gcs_port, params.count());
+    if (storage) {
+        std::printf("  settings: %s (%u saved values loaded%s)\n", storage_path.c_str(),
+                    static_cast<unsigned>(loaded.loaded), loaded.found ? "" : ", none saved yet");
+    } else {
+        std::printf("  settings: not saved (--storage none)\n");
+    }
+    std::printf("  MAVLink signing: %s\n", signing.enabled() ? "ON (unsigned messages are ignored)" : "off");
     std::printf("  open QGroundControl (it listens on UDP 14550) - the vehicle appears automatically\n");
     if (rc_neutral) std::printf("  --rc-neutral: centred sticks are fed when no joystick is connected\n");
 
@@ -205,6 +264,12 @@ int main(int argc, char** argv) {
 
         next_tick += std::chrono::microseconds(LOOP_US);
         std::this_thread::sleep_until(next_tick);
+    }
+    // Clean exit = "power off while disarmed": commit anything still pending.
+    if (storage && !vm.is_armed()) {
+        if (signing.enabled()) signing.save(storage.get());
+        settings.save();
+        storage->flush();
     }
     std::printf("autopilot_sitl: exit after %.1f s\n", ticks * LOOP_US * 1e-6);
     return 0;

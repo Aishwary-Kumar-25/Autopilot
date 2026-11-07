@@ -32,17 +32,18 @@ bool crc_extra_for(uint32_t msgid, uint8_t& crc_extra) {
         case Timesync::ID:           crc_extra = Timesync::CRC_EXTRA; return true;
         case AutopilotVersion::ID:   crc_extra = AutopilotVersion::CRC_EXTRA; return true;
         case StatusText::ID:         crc_extra = StatusText::CRC_EXTRA; return true;
+        case SetupSigning::ID:       crc_extra = SetupSigning::CRC_EXTRA; return true;
         default: return false;
     }
 }
 
 size_t encode_v2(uint8_t* out, uint8_t seq, uint8_t sysid, uint8_t compid, uint32_t msgid,
-                 const uint8_t* payload, size_t payload_len, uint8_t crc_extra) {
+                 const uint8_t* payload, size_t payload_len, uint8_t crc_extra, uint8_t incompat_flags) {
     if (payload_len > MAX_PAYLOAD) payload_len = MAX_PAYLOAD;
     while (payload_len > 1 && payload[payload_len - 1] == 0) --payload_len; // v2 truncation
     out[0] = STX_V2;
     out[1] = static_cast<uint8_t>(payload_len);
-    out[2] = 0; // incompat flags (unsigned)
+    out[2] = incompat_flags;
     out[3] = 0; // compat flags
     out[4] = seq;
     out[5] = sysid;
@@ -145,6 +146,7 @@ bool Parser::finish() {
     _msg.signed_frame = v2 && (_buf[2] & INCOMPAT_FLAG_SIGNED);
     std::memset(_msg.payload, 0, sizeof(_msg.payload));
     std::memcpy(_msg.payload, _buf + _header_len, len);
+    _frame_len = _need;
 
     if (_have_seq) _seq_lost += static_cast<uint8_t>(seq - _last_seq - 1);
     _have_seq = true;

@@ -193,3 +193,45 @@ What was added:
 - Tests: `test_mavlink` has 108 checks. `tools/sitl_gcs_check.py` uses pymavlink as the GCS and flies the SITL through params, arm, climb, ALT_HOLD, land and disarm.
 
 Not done yet: verifying MAVLink signing (signed frames are parsed but not verified), missions and guided modes, and saving parameters across reboots.
+
+---
+
+# Commit 6: Saved settings and MAVLink 2 signing
+
+Two things that need no board: tuning that survives a reboot, and a link that
+only obeys a GCS holding the team's key (Arv's item). Details are in
+`docs/MAVLINK_QGC.md`.
+
+Saved settings:
+- `hal::Storage` is a new HAL interface. SITL saves to a file
+  (`autopilot_sitl.eeprom`). STM32 uses two flash sectors as alternate copies,
+  with the header written last, so a power cut mid-save keeps the old copy.
+  The test cuts the power at all 73 steps of a save and never gets a corrupt result.
+- `comms::Settings` loads saved parameters at boot, through the same range
+  checks as a GCS change. It saves a second after the last change and only
+  while disarmed, because an STM32 flash erase stalls the CPU for 1-2 s. Only
+  changed values are stored, by name, so firmware updates keep the tuning.
+- `VEHICLE_TYPE` is saved too, so the board boots as the airframe it was set to.
+- `MAV_CMD_PREFLIGHT_STORAGE` reloads, saves now, or resets to defaults
+  (QGC's "Reset all to firmware's defaults").
+
+MAVLink 2 signing:
+- SHA-256 and the MAVLink 2 signature are written from the spec, and signed
+  frames match pymavlink byte for byte.
+- Once a key is set, unsigned, wrong-key, tampered and replayed frames are
+  dropped before they are handled, and every frame the vehicle sends is signed.
+- A key can only be installed while disarmed, and only over a trusted link
+  (USB or SITL) or by a request signed with the current key. Someone in radio
+  range therefore can't install a key or switch signing off. The key and the
+  clock are saved.
+- SITL: `--signing-passphrase P` uses the same key as MAVProxy's
+  `signing setup P`.
+
+Tests: `test_signing` (55 checks) and `test_storage` (81 checks) are new, and
+all 15 ctests pass. `tools/sitl_signing_check.py` runs the real SITL with
+pymavlink as the GCS. It covers params surviving a restart, an unsigned GCS
+being ignored, a signed GCS working, a replay attack being ignored, the key
+surviving a restart, and turning signing off. All checks pass.
+
+Still open: GPS time into the signing clock, and running the flash driver on a
+real STM32 (it compiles against the F4 and H7 HAL API, but has not run on hardware).

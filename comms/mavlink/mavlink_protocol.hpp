@@ -52,16 +52,18 @@ struct Message {
     uint8_t seq{0};
     uint8_t len{0};          // payload bytes actually on the wire
     bool v2{true};
-    bool signed_frame{false}; // v2 signature present (NOT verified: see docs)
+    bool signed_frame{false}; // v2 signature present (verified by GcsLink when signing is on)
     uint8_t payload[MAX_PAYLOAD]{};
 };
 
 /**
  * Build a v2 frame. Trailing zero payload bytes are trimmed (min length 1),
  * as the spec requires. Returns the frame length written to out (>= MAX_FRAME bytes).
+ * incompat_flags = INCOMPAT_FLAG_SIGNED marks a frame that Signing::sign() will
+ * complete (the flag is covered by the CRC, so it must be set before).
  */
 size_t encode_v2(uint8_t* out, uint8_t seq, uint8_t sysid, uint8_t compid, uint32_t msgid,
-                 const uint8_t* payload, size_t payload_len, uint8_t crc_extra);
+                 const uint8_t* payload, size_t payload_len, uint8_t crc_extra, uint8_t incompat_flags = 0);
 
 /**
  * Byte-at-a-time frame parser (v1 and v2). Resynchronises on garbage; frames
@@ -73,6 +75,9 @@ public:
     /** Feed one byte. Returns true when a complete, valid message is in msg(). */
     bool parse(uint8_t byte);
     const Message& msg() const { return _msg; }
+    /** Raw bytes of the message just returned (valid until the next parse()); for signature checks. */
+    const uint8_t* frame() const { return _buf; }
+    size_t frame_len() const { return _frame_len; }
 
     uint32_t crc_errors() const { return _crc_errors; }
     uint32_t unknown_ids() const { return _unknown_ids; }
@@ -87,6 +92,7 @@ private:
     size_t _pos{0};
     size_t _header_len{0};
     size_t _need{0};
+    size_t _frame_len{0};
     Message _msg;
     uint32_t _crc_errors{0}, _unknown_ids{0}, _frames_ok{0}, _seq_lost{0};
     bool _have_seq{false};

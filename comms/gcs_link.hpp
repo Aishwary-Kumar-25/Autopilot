@@ -17,11 +17,24 @@
  *         SET_MODE, MANUAL_CONTROL (joystick / QGC virtual joystick -> RC input),
  *         MISSION_REQUEST_LIST (answers "0 items"), TIMESYNC, PING.
  *
+ *         SETUP_SIGNING, COMMAND PREFLIGHT_STORAGE (read / write / reset params).
+ *
  * Safety rules: disarming a multicopter that is not landed needs the force
  * flag (param2 = 21196); vehicle profile / frame changes are refused while armed.
+ *
+ * Signing (set_signing): once a key is installed, every frame we send is
+ * signed and every frame we receive must carry a valid, fresh signature, or it
+ * is dropped before it is looked at (one STATUSTEXT every 10 s says why). A key
+ * is installed with SETUP_SIGNING, accepted only while disarmed and only if
+ * the link is trusted (Config::trusted_link: USB / wired, never a radio) or the
+ * request itself is signed with the current key (key rotation / turning it off).
+ * Saved settings (set_settings): parameter changes are saved to storage while
+ * disarmed, and the signing key + clock are saved with them.
  */
 #include "comms/mavlink/mavlink_messages.hpp"
+#include "comms/mavlink/mavlink_signing.hpp"
 #include "comms/params.hpp"
+#include "comms/settings.hpp"
 #include "hal/hal.hpp"
 #include "vehicles/vehicle_manager.hpp"
 #include <cstdint>
@@ -37,6 +50,13 @@ public:
         uint32_t gcs_timeout_ms{3000};
         bool accept_manual_control{true}; // false when a real RC receiver is the pilot input
         size_t params_per_update{10};     // PARAM_VALUE burst size while streaming the list
+        /**
+         * The link is physically private (USB cable, SITL on this PC): unsigned
+         * SETUP_SIGNING is accepted here, so a key can be installed or replaced.
+         * Leave false for telemetry radios: there only a request signed with the
+         * current key can change it, so nobody in radio range can take over.
+         */
+        bool trusted_link{false};
     };
 
     struct Stats {
@@ -45,6 +65,8 @@ public:
         uint32_t rx_lost{0};
         uint32_t tx_messages{0};
         uint32_t manual_control_msgs{0};
+        uint32_t rx_rejected_unsigned{0};   // signing on, frame had no signature
+        uint32_t rx_rejected_signature{0};  // wrong key, tampered, replayed or stale
     };
 
     GcsLink(hal::UARTDevice* port, vehicles::VehicleManager* vm, ParamStore* params, const Config& cfg);
@@ -66,6 +88,12 @@ public:
     /** Change a telemetry stream rate. interval_ms 0 disables. Returns false if not a stream. */
     bool set_stream_interval(uint32_t msgid, uint32_t interval_ms);
 
+    /** Turn on MAVLink signing support (key state lives in `signing`; may already hold a loaded key). */
+    void set_signing(mavlink::Signing* signing) { _signing = signing; }
+    /** Saved parameters; also where the signing key is saved. */
+    void set_settings(Settings* settings) { _settings = settings; }
+    bool signing_enabled() const { return _signing && _signing->enabled(); }
+
     bool gcs_connected() const { return _gcs_seen && (now() - _last_gcs_heartbeat_ms) < _cfg.gcs_timeout_ms; }
     const Stats& stats() const { return _stats; }
     const Config& config() const { return _cfg; }
@@ -74,6 +102,10 @@ private:
     hal::UARTDevice* _port;
     vehicles::VehicleManager* _vm;
     ParamStore* _params;
+    mavlink::Signing* _signing{nullptr};
+    Settings* _settings{nullptr};
+    uint32_t _last_reject_text_ms{0};
+    bool _reject_text_sent{false};
     Config _cfg;
     Stats _stats;
     mavlink::Parser _parser;
@@ -111,7 +143,11 @@ private:
 
     uint32_t now() const;
     void receive();
-    void handle(const mavlink::Message& msg);
+    void handle(const mavlink::Message& msg, bool signature_ok);
+    bool accept_frame(const mavlink::Message& msg, bool& signature_ok);
+    void handle_setup_signing(const mavlink::Message& msg, bool signature_ok);
+    uint8_t handle_preflight_storage(int action);
+    void save_signing();
     void handle_command(uint16_t command, const float p[7], uint8_t src_sys, uint8_t src_comp);
     void handle_manual_control(const mavlink::ManualControl& mc);
     bool set_custom_mode(uint32_t custom_mode);
@@ -125,7 +161,10 @@ private:
 
     template <typename Msg> void send(const Msg& m) {
         uint8_t frame[mavlink::MAX_FRAME];
-        const size_t n = mavlink::pack(frame, _tx_seq++, _cfg.sysid, _cfg.compid, m);
+        const bool sign = _signing && _signing->enabled();
+        size_t n = mavlink::pack(frame, _tx_seq++, _cfg.sysid, _cfg.compid, m,
+                                 sign ? mavlink::INCOMPAT_FLAG_SIGNED : 0);
+        if (sign) n = _signing->sign(frame, n);
         if (_port) _port->write(frame, n);
         ++_stats.tx_messages;
     }

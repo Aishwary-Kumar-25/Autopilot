@@ -300,6 +300,7 @@ STM32HAL::STM32HAL() {}
 bool STM32HAL::init() {
     // Peripherals are initialised by CubeMX (MX_*_Init) before this is called;
     // the handles are passed in via the device constructors / set_handle().
+    _storage.mount();   // settings flash; a blank or damaged copy mounts as empty storage
     return AP_ON_TARGET != 0;
 }
 
@@ -325,6 +326,10 @@ PWMOutput* STM32HAL::get_pwm() {
 
 Time* STM32HAL::get_time() {
     return &_time;
+}
+
+Storage* STM32HAL::get_storage() {
+    return _storage.mounted() ? &_storage : nullptr;
 }
 
 } // namespace hal

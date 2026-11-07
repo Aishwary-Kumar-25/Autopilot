@@ -73,5 +73,15 @@ void ParamStore::apply_all() {
     }
 }
 
+size_t ParamStore::reset_to_defaults() {
+    size_t refused = 0;
+    for (size_t i = 0; i < _params.size(); ++i) {
+        const Param& p = _params[i];
+        if (!p.persist || value(i) == p.default_value) continue;
+        if (set(i, p.default_value) != SetResult::OK) ++refused;
+    }
+    return refused;
+}
+
 } // namespace comms
 } // namespace autopilot

@@ -37,6 +37,8 @@ set(CORE_SOURCES
     hal/posix/posix_hal.cpp
     hal/stm32/stm32_hal.cpp
     hal/stm32/stm32_pwm.cpp
+    hal/stm32/stm32_flash.cpp
+    hal/flash_storage.cpp
     drivers/sensor_manager.cpp
     drivers/mag/compass_calibrator.cpp
     fusion/madgwick.cpp
@@ -54,6 +56,9 @@ set(CORE_SOURCES
     system/telemetry.cpp
     system/pubsub.hpp
     comms/mavlink/mavlink_protocol.cpp
+    comms/mavlink/sha256.cpp
+    comms/mavlink/mavlink_signing.cpp
+    comms/settings.cpp
     comms/params.cpp
     comms/vehicle_params.cpp
     comms/gcs_link.cpp
@@ -61,7 +66,7 @@ set(CORE_SOURCES
 
 # MAVLink over UDP for SITL / desktop builds (POSIX sockets)
 if(NOT STM32_TARGET)
-    list(APPEND CORE_SOURCES hal/posix/udp_link.cpp)
+    list(APPEND CORE_SOURCES hal/posix/udp_link.cpp hal/posix/file_storage.cpp)
 endif()
 
 if(ENABLE_DRIVER_MPU6050)
@@ -158,4 +163,11 @@ if(BUILD_TESTS)
     add_executable(test_mavlink tests/test_mavlink.cpp)
     target_link_libraries(test_mavlink PRIVATE autopilot_core pthread)
     add_test(NAME test_mavlink COMMAND test_mavlink)
+
+    # Saved settings (file + A/B flash storage, parameters) and MAVLink signing
+    foreach(t test_storage test_signing)
+        add_executable(${t} tests/${t}.cpp)
+        target_link_libraries(${t} PRIVATE autopilot_core pthread)
+        add_test(NAME ${t} COMMAND ${t})
+    endforeach()
 endif()

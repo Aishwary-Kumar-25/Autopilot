@@ -41,7 +41,8 @@ def main():
     args = ap.parse_args()
 
     gcs = mavutil.mavlink_connection("udpin:127.0.0.1:%d" % args.port, source_system=255, source_component=190)
-    sitl = subprocess.Popen([args.sitl, "--gcs", "127.0.0.1:%d" % args.port, "--duration", "60", "--quiet"],
+    sitl = subprocess.Popen([args.sitl, "--gcs", "127.0.0.1:%d" % args.port, "--duration", "60", "--quiet",
+                             "--storage", "none"],  # always start from defaults
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     stop = threading.Event()
     stick = {"x": 0, "y": 0, "z": 0, "r": 0}

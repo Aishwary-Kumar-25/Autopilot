@@ -84,6 +84,41 @@ RX = [
 ]
 
 
+# --- MAVLink 2 signing (tests/test_signing.cpp) ---
+SIGN_KEY = bytes(range(32))           # test key 00 01 02 .. 1F
+SIGN_TS_TX = 1000000                  # vehicle clock (10 us units since 2015)
+SIGN_TS_RX = 500000000                # GCS clock
+
+
+def signed_frame(msg, seq, sysid, compid, link_id, ts):
+    m = mav.MAVLink(None, srcSystem=sysid, srcComponent=compid)
+    m.seq = seq
+    m.signing.secret_key = SIGN_KEY
+    m.signing.sign_outgoing = True
+    m.signing.link_id = link_id
+    m.signing.timestamp = ts
+    return bytes(msg.pack(m))
+
+
+SIGNED = [
+    # vehicle -> GCS: our signer must produce exactly these bytes
+    ("SIGNED_TX_HEARTBEAT", signed_frame(M.MAVLink_heartbeat_message(
+        type=M.MAV_TYPE_QUADROTOR, autopilot=M.MAV_AUTOPILOT_GENERIC, base_mode=1 | 64 | 16 | 128,
+        custom_mode=2, system_status=M.MAV_STATE_ACTIVE, mavlink_version=3), 0, 1, 1, 0, SIGN_TS_TX)),
+    # GCS -> vehicle: our verifier must accept these
+    ("SIGNED_RX_ARM", signed_frame(M.MAVLink_command_long_message(
+        target_system=1, target_component=1, command=400, confirmation=0, param1=1, param2=0, param3=0,
+        param4=0, param5=0, param6=0, param7=0), 41, 255, 190, 1, SIGN_TS_RX)),
+    ("SIGNED_RX_HEARTBEAT", signed_frame(M.MAVLink_heartbeat_message(
+        type=M.MAV_TYPE_GCS, autopilot=M.MAV_AUTOPILOT_INVALID, base_mode=0, custom_mode=0, system_status=0,
+        mavlink_version=3), 40, 255, 190, 1, SIGN_TS_RX - 10)),
+    # SETUP_SIGNING codec (unsigned, as sent over USB)
+    ("SETUP_SIGNING", frame(M.MAVLink_setup_signing_message(
+        target_system=1, target_component=1, secret_key=list(SIGN_KEY), initial_timestamp=SIGN_TS_RX), 46,
+        255, 190)),
+]
+
+
 def cbytes(b):
     return ", ".join("0x%02X" % x for x in b)
 
@@ -105,6 +140,8 @@ def main():
     hb = mav.MAVLink_heartbeat_message(type=M.MAV_TYPE_GCS, autopilot=M.MAV_AUTOPILOT_INVALID, base_mode=0,
                                        custom_mode=0, system_status=0, mavlink_version=3)
     out.write("static const uint8_t RX_V1_HEARTBEAT[] = {%s};\n" % cbytes(bytes(hb.pack(m1, force_mavlink1=True))))
+    for name, b in SIGNED:
+        out.write("static const uint8_t %s[] = {%s};\n" % (name, cbytes(b)))
     out.write("} // namespace golden\n")
 
 

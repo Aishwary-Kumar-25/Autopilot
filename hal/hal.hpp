@@ -141,6 +141,27 @@ public:
 };
 
 /**
+ * @brief Non-volatile storage for settings (parameters, MAVLink signing key).
+ *
+ * A byte array that survives a reboot: a file in SITL (hal/posix/file_storage.hpp),
+ * two flash sectors on STM32 (hal/flash_storage.hpp + hal/stm32/stm32_flash.hpp).
+ * read()/write() work on a RAM copy and are cheap. flush() commits the copy and
+ * can BLOCK for a long time (an STM32 sector erase stalls the CPU for 1-2 s), so
+ * callers only flush while disarmed. Never-written bytes read as 0xFF.
+ */
+class Storage {
+public:
+    virtual ~Storage() = default;
+    virtual size_t size() const = 0;
+    virtual bool read(size_t offset, uint8_t* data, size_t len) = 0;
+    virtual bool write(size_t offset, const uint8_t* data, size_t len) = 0;
+    /** Commit pending writes to non-volatile memory. No-op when nothing changed. */
+    virtual bool flush() = 0;
+    /** True when write() changed something that flush() has not committed yet. */
+    virtual bool dirty() const = 0;
+};
+
+/**
  * @brief Top-level Hardware Abstraction Layer aggregating all peripherals.
  */
 class HAL {
@@ -154,6 +175,8 @@ public:
     virtual UARTDevice* get_uart(uint8_t port_index = 0) = 0;
     virtual PWMOutput* get_pwm() = 0;
     virtual Time* get_time() = 0;
+    /** Settings storage, or nullptr when the board has none (settings then reset at boot). */
+    virtual Storage* get_storage() { return nullptr; }
 };
 
 // Global HAL access helper

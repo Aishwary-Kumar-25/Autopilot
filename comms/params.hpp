@@ -11,6 +11,9 @@
  *              active vehicle type, which other code can change too)
  * on_set returns false to refuse a change (e.g. "only while disarmed"); the
  * stored value then stays as it was.
+ *
+ * Every parameter is saved across reboots (comms/settings.hpp) unless it is
+ * marked with set_persistent(index, false), e.g. the current flight mode.
  */
 #include <cstdint>
 #include <functional>
@@ -33,6 +36,7 @@ public:
         float min{-1e9f}, max{1e9f};
         std::function<bool(float)> on_set;
         std::function<float()> get;  // set => live parameter
+        bool persist{true};           // saved across reboots
     };
 
     /** Add a stored parameter. Returns its index, or -1 (bad/duplicate name). */
@@ -53,6 +57,13 @@ public:
 
     /** Re-run on_set for every stored parameter (live ones are skipped). */
     void apply_all();
+    /** Exclude a parameter from (or include it in) the saved settings. */
+    void set_persistent(size_t index, bool persist) { if (index < _params.size()) _params[index].persist = persist; }
+    /**
+     * Set every saved parameter back to its default. Returns how many could
+     * not be reset (refused by on_set, e.g. while armed).
+     */
+    size_t reset_to_defaults();
     /** Bumped on every successful change (lets the GCS link notice local changes). */
     uint32_t revision() const { return _revision; }
 

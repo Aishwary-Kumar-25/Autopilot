@@ -81,8 +81,84 @@ Safety rules:
 | MC_ALT_P, MC_CLIMB_P/I/D | float | altitude hold |
 
 Tuning survives a vehicle-profile switch, because stored values are re-applied
-to the new vehicle object. Parameters are **not saved across reboots yet**;
-that needs a flash/EEPROM backend on the board.
+to the new vehicle object, and it survives a reboot (next section).
+
+## Saved settings
+
+Every parameter except `FLTMODE` is saved and loaded at the next boot,
+including `VEHICLE_TYPE`, so the board comes up as the airframe it was set to.
+
+- **Where:** `hal::Storage` (`hal/hal.hpp`). In SITL it is the file
+  `autopilot_sitl.eeprom` in the current folder (`--storage FILE`,
+  `--storage none`, `--wipe` for factory defaults). On STM32 it is two flash
+  sectors used as alternate copies (`hal/flash_storage.*`,
+  `hal/stm32/stm32_flash.*`); see "STM32 flash" below.
+- **When:** a change is saved once nothing has changed for one second (QGC
+  writing 20 values costs one save, not 20), and **only while disarmed**: an
+  STM32 sector erase stalls the CPU for 1-2 s, which must never happen in the
+  air. Changes made in flight are saved after landing and disarming.
+- **What:** only values that differ from the default, stored by name with a
+  CRC. New firmware that adds or renames parameters still loads the rest, a
+  default changed in new firmware takes effect unless you set that value
+  yourself, and a damaged block is ignored (defaults are used).
+- **From the GCS:** `MAV_CMD_PREFLIGHT_STORAGE` param1 = 0 reloads the saved
+  values, 1 saves now, 2 or 4 resets everything to defaults (QGC's
+  *Parameters > Tools > Reset all to firmware's defaults*). Refused while armed.
+
+### STM32 flash
+
+By default sectors 10 and 11 of a 1 MB F405/F407/F427 are used (128 KB each at
+`0x080C0000` and `0x080E0000`). **Shrink the FLASH region in the CubeMX linker
+script to 768K** so no code is placed there. Other chips: set
+`AP_STORAGE_SLOT{0,1}_ADDR`, `AP_STORAGE_SLOT{0,1}_SECTOR`,
+`AP_STORAGE_SLOT_SIZE` (and `AP_STORAGE_BANK` on dual-bank H7) with `-D`.
+Writes alternate between the two sectors and the header goes in last, so a
+power cut during a save leaves the previous copy intact
+(`tests/test_storage.cpp` cuts the power at every step of a save). One save is
+one sector erase, and flash lasts about 10,000 erases per sector, which is
+decades of normal tuning.
+
+## MAVLink 2 signing
+
+With signing on, only someone who has the 32-byte secret key can control the
+vehicle. Every frame carries a SHA-256-based signature and a timestamp, and
+the vehicle drops any frame that is unsigned, signed with another key,
+tampered with, or replayed (a timestamp must be newer than the last one on
+that link). The vehicle's own frames are signed too, so the GCS can check them.
+This is the standard MAVLink 2 scheme
+(https://mavlink.io/en/guide/message_signing.html), checked byte for byte
+against pymavlink.
+
+**Turn it on in SITL:**
+
+```bash
+./build/autopilot_sitl --signing-passphrase "our team secret"
+```
+
+The key is SHA-256 of the passphrase, the same as MAVProxy's
+`signing setup <passphrase>`, so MAVProxy, Mission Planner (*Config > Signing*)
+and pymavlink connect when given the same passphrase. The key is saved, so later
+runs stay signed without the option. `--signing-off` removes it. If your
+QGroundControl build has no MAVLink signing setting, it still shows telemetry,
+but its commands are ignored, and the vehicle says so with a STATUSTEXT
+"Signing on: unsigned MAVLink ignored" every 10 s.
+
+**From a GCS (`SETUP_SIGNING`):** accepted only while disarmed, and only if
+either
+
+- the link is trusted (`GcsLink::Config::trusted_link`: a USB cable, or SITL
+  on the same PC), or
+- the request itself is signed with the current key (key rotation, or
+  switching off with an all-zero key).
+
+So nobody in radio range can install a key and lock you out, or switch
+signing off. On a real board, set `trusted_link = true` only for the USB
+port. If the key is lost, re-key over USB.
+
+**Clock:** the timestamp is saved with the key and moves forward with boot
+time. It jumps to the GCS's clock (real UTC time) as soon as a signed frame
+arrives, and it is saved again at every disarm, so it never goes backwards
+across reboots.
 
 ## Code map
 
@@ -90,13 +166,23 @@ that needs a flash/EEPROM backend on the board.
 comms/mavlink/mavlink_protocol.*   framing, CRC, v1+v2 parser, LE writer/reader
 comms/mavlink/mavlink_messages.hpp message structs (wire order), enums
 comms/params.*                     ParamStore: typed named params with setters
+comms/settings.*                   saved parameters (load at boot, debounced save while disarmed)
+comms/storage_layout.hpp           where each saved block lives in hal::Storage
+comms/mavlink/mavlink_signing.*    MAVLink 2 signing: sign, verify, replay check, key storage
+comms/mavlink/sha256.*             SHA-256 (no heap)
+hal/flash_storage.*                power-cut-safe A/B flash storage (+ simulated flash for tests)
+hal/stm32/stm32_flash.*            STM32 F4/F7/G4/H7 flash erase/program
+hal/posix/file_storage.*           SITL settings file
 comms/vehicle_params.*             the flight-stack parameter set + flight modes
 comms/gcs_link.*                   GcsLink: streams, commands, params, events
 hal/posix/udp_link.*               UDP transport (a hal::UARTDevice)
 sim/sitl_main.cpp                  real-time SITL app (quad + GPS + battery sim)
 tests/test_mavlink.cpp             golden frames + link behaviour (ctest)
+tests/test_signing.cpp             signing vs pymavlink, GCS lockout, key rules, replay
+tests/test_storage.cpp             file + flash storage, power cuts, params across reboots
 tools/gen_mavlink_golden.py        regenerates tests/mavlink_golden.hpp
 tools/sitl_gcs_check.py            end-to-end: pymavlink as GCS flies the SITL
+tools/sitl_signing_check.py        end-to-end: saved params across restarts, signing, replay
 ```
 
 On hardware, give `GcsLink` the telemetry UART (`hal->get_uart(n)`, USART1 in
@@ -109,15 +195,17 @@ On hardware, give `GcsLink` the telemetry UART (`hal->get_uart(n)`, USART1 in
 ctest --test-dir build                 # includes test_mavlink (108 checks)
 pip install pymavlink
 python3 tools/sitl_gcs_check.py        # pymavlink as GCS: params, arm, climb, hold, land, disarm
+python3 tools/sitl_signing_check.py    # saved params across restarts, signing on/off, replay attack
 python3 tools/gen_mavlink_golden.py > tests/mavlink_golden.hpp   # after changing an encoder
 ```
 
 ## Not done yet
 
-- MAVLink signing. Signed frames are parsed but **not verified**, and that
-  verification is the next security step (Arv's item).
 - Missions and guided/auto modes, which need a navigation controller first.
-- Parameter persistence.
+- GPS time is not yet fed into the signing clock (`Signing::advance_to()` is
+  ready for it); until then the clock comes from storage and the GCS.
+- The STM32 flash driver compiles for F4 and H7 against the ST HAL API, but has
+  not run on a real board yet.
 - PARAM_ERROR replies.
 - Sending COMMAND_ACK progress for long-running commands.
 - Calibration commands (`PREFLIGHT_CALIBRATION`), which currently get an ACK

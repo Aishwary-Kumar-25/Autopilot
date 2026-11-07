@@ -46,6 +46,7 @@ enum MavSeverity : uint8_t {
 enum MavParamType : uint8_t { MAV_PARAM_TYPE_INT32 = 6, MAV_PARAM_TYPE_REAL32 = 9 };
 enum MavCmd : uint16_t {
     MAV_CMD_DO_SET_MODE = 176,
+    MAV_CMD_PREFLIGHT_STORAGE = 245,
     MAV_CMD_COMPONENT_ARM_DISARM = 400,
     MAV_CMD_SET_MESSAGE_INTERVAL = 511,
     MAV_CMD_REQUEST_MESSAGE = 512,
@@ -470,12 +471,31 @@ struct StatusText {
     }
 };
 
+struct SetupSigning {
+    static constexpr uint32_t ID = 256;
+    static constexpr uint8_t CRC_EXTRA = 71;
+    uint64_t initial_timestamp{0};
+    uint8_t target_system{0}, target_component{0};
+    uint8_t secret_key[32]{};
+    size_t encode(uint8_t* b) const {
+        Writer w(b);
+        w.u64(initial_timestamp); w.u8(target_system); w.u8(target_component); w.bytes(secret_key, 32);
+        return w.size();
+    }
+    static SetupSigning decode(const uint8_t* p) {
+        Reader r(p); SetupSigning m;
+        m.initial_timestamp = r.u64(); m.target_system = r.u8(); m.target_component = r.u8();
+        for (auto& k : m.secret_key) k = r.u8();
+        return m;
+    }
+};
+
 /** Encode any message struct above into a ready-to-send v2 frame. */
 template <typename Msg>
-size_t pack(uint8_t* frame, uint8_t seq, uint8_t sysid, uint8_t compid, const Msg& m) {
+size_t pack(uint8_t* frame, uint8_t seq, uint8_t sysid, uint8_t compid, const Msg& m, uint8_t incompat_flags = 0) {
     uint8_t payload[MAX_PAYLOAD] = {};
     const size_t n = m.encode(payload);
-    return encode_v2(frame, seq, sysid, compid, Msg::ID, payload, n, Msg::CRC_EXTRA);
+    return encode_v2(frame, seq, sysid, compid, Msg::ID, payload, n, Msg::CRC_EXTRA, incompat_flags);
 }
 
 } // namespace mavlink

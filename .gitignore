@@ -15,3 +15,7 @@ compile_commands.json
 
 # System files
 .DS_Store
+
+# SITL saved settings
+*.eeprom
+*.eeprom.tmp

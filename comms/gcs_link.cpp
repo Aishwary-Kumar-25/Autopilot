@@ -74,9 +74,11 @@ void GcsLink::update() {
         });
         _sensor_callback_installed = true;
     }
+    const uint32_t t = now();
+    if (_signing) _signing->tick(t);
     receive();
     detect_events();
-    const uint32_t t = now();
+    if (_settings) _settings->update(_vm->is_armed(), t);
     stream_telemetry(t);
     stream_params();
     flush_texts();
@@ -92,8 +94,10 @@ void GcsLink::receive() {
     for (int chunk = 0; chunk < 16 && (n = _port->read(buf, sizeof(buf))) > 0; ++chunk) {
         for (size_t i = 0; i < n; ++i) {
             if (_parser.parse(buf[i])) {
+                bool signature_ok = false;
+                if (!accept_frame(_parser.msg(), signature_ok)) continue;
                 ++_stats.rx_messages;
-                handle(_parser.msg());
+                handle(_parser.msg(), signature_ok);
             }
         }
     }
@@ -101,7 +105,89 @@ void GcsLink::receive() {
     _stats.rx_lost = _parser.seq_lost();
 }
 
-void GcsLink::handle(const Message& msg) {
+bool GcsLink::accept_frame(const Message& msg, bool& signature_ok) {
+    signature_ok = false;
+    if (!_signing || !_signing->enabled()) return true;
+    const auto r = _signing->verify(_parser.frame(), _parser.frame_len(), msg.sysid, msg.compid);
+    if (r == mavlink::Signing::Result::OK) {
+        signature_ok = true;
+        return true;
+    }
+    // The one unsigned message we take: SETUP_SIGNING over a trusted (wired) link,
+    // so a GCS that lost the key can be re-keyed over USB.
+    if (r == mavlink::Signing::Result::UNSIGNED && msg.msgid == SetupSigning::ID && _cfg.trusted_link) return true;
+
+    if (r == mavlink::Signing::Result::UNSIGNED) ++_stats.rx_rejected_unsigned;
+    else ++_stats.rx_rejected_signature;
+    const uint32_t t = now();
+    if (!_reject_text_sent || t - _last_reject_text_ms >= 10000) {
+        _reject_text_sent = true;
+        _last_reject_text_ms = t;
+        send_statustext(MAV_SEVERITY_WARNING, r == mavlink::Signing::Result::UNSIGNED
+                                                  ? "Signing on: unsigned MAVLink ignored"
+                                                  : "Signing: bad/replayed signature ignored");
+    }
+    return false;
+}
+
+void GcsLink::save_signing() {
+    if (_signing && _settings && _settings->storage()) _signing->save(_settings->storage());
+}
+
+void GcsLink::handle_setup_signing(const Message& msg, bool signature_ok) {
+    const auto m = SetupSigning::decode(msg.payload);
+    if (!for_us(m.target_system, m.target_component)) return;
+    if (!_signing) {
+        send_statustext(MAV_SEVERITY_WARNING, "Signing not supported on this link");
+        return;
+    }
+    if (_vm->is_armed()) {
+        send_statustext(MAV_SEVERITY_WARNING, "Signing setup refused: disarm first");
+        return;
+    }
+    // Installing the first key over an untrusted link would let anyone in radio
+    // range lock the owner out; changing an existing key needs the old key.
+    if (!_cfg.trusted_link && !signature_ok) {
+        send_statustext(MAV_SEVERITY_WARNING, "Signing setup refused: needs USB or current key");
+        return;
+    }
+    _signing->set_key(m.secret_key, m.initial_timestamp);
+    save_signing();
+    send_statustext(MAV_SEVERITY_NOTICE, _signing->enabled() ? "Signing enabled" : "Signing disabled");
+}
+
+uint8_t GcsLink::handle_preflight_storage(int action) {
+    if (!_settings || !_settings->available()) return MAV_RESULT_UNSUPPORTED;
+    if (_vm->is_armed()) {
+        send_statustext(MAV_SEVERITY_WARNING, "Param storage: disarm first");
+        return MAV_RESULT_DENIED;
+    }
+    switch (action) {
+        case 0: {   // PARAM_READ_PERSISTENT: back to the saved values
+            _params->reset_to_defaults();
+            const auto r = _settings->load();
+            char t[51];
+            std::snprintf(t, sizeof(t), "Params loaded: %u", static_cast<unsigned>(r.loaded));
+            send_statustext(MAV_SEVERITY_INFO, t);
+            return MAV_RESULT_ACCEPTED;
+        }
+        case 1:     // PARAM_WRITE_PERSISTENT
+            if (!_settings->save_now()) return MAV_RESULT_FAILED;
+            send_statustext(MAV_SEVERITY_INFO, "Params saved");
+            return MAV_RESULT_ACCEPTED;
+        case 2:     // PARAM_RESET_FACTORY_DEFAULT (QGC "Reset all to firmware's defaults")
+        case 4: {   // PARAM_RESET_ALL_DEFAULT
+            const size_t refused = _params->reset_to_defaults();
+            if (!_settings->save_now() || refused) return MAV_RESULT_FAILED;
+            send_statustext(MAV_SEVERITY_NOTICE, "Params reset to defaults");
+            return MAV_RESULT_ACCEPTED;
+        }
+        default:
+            return MAV_RESULT_UNSUPPORTED;
+    }
+}
+
+void GcsLink::handle(const Message& msg, bool signature_ok) {
     if (msg.sysid == _cfg.sysid && msg.compid == _cfg.compid) return; // our own echo
 
     switch (msg.msgid) {
@@ -216,6 +302,9 @@ void GcsLink::handle(const Message& msg) {
             send(r);
             break;
         }
+        case SetupSigning::ID:
+            handle_setup_signing(msg, signature_ok);
+            break;
         default:
             break;
     }
@@ -266,6 +355,9 @@ void GcsLink::handle_command(uint16_t command, const float p[7], uint8_t src_sys
         }
         case MAV_CMD_REQUEST_MESSAGE:
             result = send_message_by_id(static_cast<uint32_t>(p[0])) ? MAV_RESULT_ACCEPTED : MAV_RESULT_UNSUPPORTED;
+            break;
+        case MAV_CMD_PREFLIGHT_STORAGE:
+            result = handle_preflight_storage(static_cast<int>(std::lround(p[0])));
             break;
         case MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES:
             send_autopilot_version();
@@ -340,6 +432,9 @@ void GcsLink::detect_events() {
     const bool armed = _vm->is_armed();
     if (armed != _last_armed) {
         send_statustext(MAV_SEVERITY_INFO, armed ? "Armed" : "Disarmed");
+        // Once per flight: save the signing clock, so after a reboot our
+        // timestamps continue past everything the GCS has already seen.
+        if (!armed && signing_enabled()) save_signing();
         _last_armed = armed;
     }
     const auto fs = v->get_failsafe().action();

@@ -87,9 +87,11 @@ void register_vehicle_params(ParamStore& store, VehicleManager& vm) {
 
     // Flight mode as a parameter too: works from any GCS's parameter editor, even
     // ones that only know their own firmware's mode names.
-    store.add_live("FLTMODE", T::INT32, 0, NUM_VEHICLE_MODES - 1,
+    const int fltmode = store.add_live("FLTMODE", T::INT32, 0, NUM_VEHICLE_MODES - 1,
         [m] { return static_cast<float>(get_vehicle_mode(*m)); },
         [m](float v) { return set_vehicle_mode(*m, static_cast<uint32_t>(v)); });
+    // The mode is state, not configuration: always boot in the vehicle's default mode.
+    if (fltmode >= 0) store.set_persistent(static_cast<size_t>(fltmode), false);
 
     // ---- vehicle profile / frame (live: other code can change these too) ----
     store.add_live("VEHICLE_TYPE", T::INT32, 0, 2,

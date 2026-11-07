@@ -2,6 +2,7 @@
 
 #include "hal/hal.hpp"
 #include "stm32_pwm.hpp"
+#include "stm32_flash.hpp"
 
 /*
  * Build modes
@@ -128,6 +129,8 @@ public:
     UARTDevice* get_uart(uint8_t port_index = 0) override;
     PWMOutput* get_pwm() override;
     Time* get_time() override;
+    /** Flash-backed settings storage (mounted in init(); nullptr if the flash can't be read). */
+    Storage* get_storage() override;
 
     STM32I2CDevice& i2c() { return _i2c; }
     STM32SPIDevice& spi() { return _spi; }
@@ -143,6 +146,10 @@ private:
     STM32UARTDevice _uart;
     STM32PWMOutput _pwm;
     STM32Time _time;
+    static constexpr size_t STORAGE_SIZE = 4096;   // RAM mirror; layout in comms/storage_layout.hpp
+    uint8_t _storage_mirror[STORAGE_SIZE];
+    STM32FlashDevice _flash;
+    FlashStorage _storage{&_flash, _storage_mirror, STORAGE_SIZE};
 };
 
 } // namespace hal
