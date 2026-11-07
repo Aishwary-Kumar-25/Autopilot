@@ -66,6 +66,7 @@ void SensorFusion::reset() {
     _source = 0;
     _have_home = false;
     _baro_ref_set = false;
+    _baro_ref_src = nullptr;
     _last_gps_ms = 0;
     _gps_lin_accel = math::Vector3f(0, 0, 0);
     for (int i = 0; i < SF_BUCKETS; ++i) {
@@ -291,7 +292,15 @@ void SensorFusion::update_altitude(float dt) {
             // altitude is reported relative to the take-off point
             _baro_ref_alt = measured_alt;
             _baro_ref_set = true;
+            _baro_ref_src = baro;
             _alt_estimator.reset(0.0f);
+        } else if (baro != _baro_ref_src) {
+            // Failover to another barometer: two baros can disagree by metres (own
+            // ground reference, offset, temperature). Re-reference the new one to the
+            // current estimate so the altitude stays continuous instead of stepping,
+            // which would make ALT_HOLD climb or dive.
+            _baro_ref_alt = measured_alt - _alt_estimator.get_altitude();
+            _baro_ref_src = baro;
         }
         _alt_estimator.correct(measured_alt - _baro_ref_alt, dt);
         _state.altitude_valid = true;

@@ -3,6 +3,7 @@
 #include "vehicles/vehicle_base.hpp"
 #include "uav_mixer.hpp"
 #include "math/pid.hpp"
+#include "math/biquad_filter.hpp"
 #include <algorithm>
 
 namespace autopilot {
@@ -20,7 +21,12 @@ public:
 
     const char* get_type_name() const override;
 
-    void set_mode(UAVFlightMode mode) { _mode = mode; }
+    /**
+     * Change flight mode. Entering ALT_HOLD captures the current altitude as the
+     * target (and, when hovering in STABILIZE, seeds the hover throttle), so a
+     * mid-air mode switch holds where the vehicle is instead of flying to a stale target.
+     */
+    void set_mode(UAVFlightMode mode);
     UAVFlightMode get_mode() const { return _mode; }
 
     void set_target_altitude(float target_alt_m) { _target_altitude_m = target_alt_m; }
@@ -39,6 +45,14 @@ public:
     float get_target_altitude() const { return _target_altitude_m; }
     bool is_landed() const { return _landed; }
 
+    /**
+     * Optional rate-loop gyro filtering (both off by default):
+     *  - lpf_hz   : 2-pole low-pass on the gyro used by the rate PIDs (0 = off)
+     *  - notch_hz : notch at the motor/prop vibration frequency (0 = off)
+     * sample_hz is the rate step() is called at.
+     */
+    void set_gyro_filters(float lpf_hz, float notch_hz, float notch_bw_hz, float sample_hz);
+
     // Tunables (exposed for the simulator / parameter system)
     static constexpr float MAX_ANGLE_RAD = 30.0f * 0.0174532925f;
     static constexpr float MAX_YAW_RATE = 3.0f;      // rad/s
@@ -49,6 +63,7 @@ public:
 
 protected:
     void update_controller(float dt) override;
+    bool check_arming_inputs(std::string& failure_reason) const override;
     void on_arm() override;
     void on_disarm() override;
     bool apply_failsafe_land(float dt) override;
@@ -69,6 +84,10 @@ private:
     // Altitude Controller
     math::PID _altitude_pid;
     math::PID _velocity_z_pid;
+
+    math::BiquadFilter _gyro_lpf[3];
+    math::BiquadFilter _gyro_notch[3];
+    math::Vector3f filtered_rates();
 
     float _hover_throttle{0.5f};
     float _last_throttle{0.0f};

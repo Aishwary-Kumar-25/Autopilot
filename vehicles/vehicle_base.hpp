@@ -97,6 +97,15 @@ protected:
 
     uint32_t now_ms() const;
 
+    /**
+     * Vehicle-specific "sticks are safe" arming check (e.g. throttle low on a
+     * multicopter), so arming can never make the vehicle jump. Default: OK.
+     */
+    virtual bool check_arming_inputs(std::string& failure_reason) const {
+        (void)failure_reason;
+        return true;
+    }
+
     /** Called when arming succeeds / on disarm: reset controller state. */
     virtual void on_arm() {}
     virtual void on_disarm() {}

@@ -55,6 +55,10 @@ private:
 
     int32_t _t_fine{0};
 
+    static constexpr uint32_t MIN_READ_INTERVAL_MS = 20;
+    uint32_t _last_read_ms{0};
+    bool _have_read{false};
+
     bool read_calibration_data();
     float calculate_altitude(float pressure_pa, float ground_pa);
 };

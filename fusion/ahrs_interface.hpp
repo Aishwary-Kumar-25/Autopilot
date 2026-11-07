@@ -126,6 +126,7 @@ private:
     // Baro reference
     bool _baro_ref_set{false};
     float _baro_ref_alt{0.0f};
+    const void* _baro_ref_src{nullptr}; // barometer the reference belongs to
 
     void update_attitude(float dt);
     void update_altitude(float dt);

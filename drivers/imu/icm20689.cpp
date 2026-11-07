@@ -1,4 +1,5 @@
 #include "icm20689.hpp"
+#include "gyro_cal.hpp"
 
 namespace autopilot {
 namespace drivers {
@@ -53,7 +54,18 @@ bool ICM20689::init() {
     _i2c->write_byte(_i2c_addr, REG_GYRO_CONFIG, 0x18);  // +/- 2000 dps
     _i2c->write_byte(_i2c_addr, REG_ACCEL_CONFIG, 0x10); // +/- 8g
 
-    calibrate_gyro_bias(50);
+    // Gyro bias needs the vehicle still. Retry a few times; if it keeps moving,
+    // fail init: SensorManager re-probes once a second while disarmed, so the
+    // IMU comes up as soon as the vehicle is put down.
+    bool cal_ok = false;
+    for (int attempt = 0; attempt < 3 && !cal_ok; ++attempt) {
+        calibrate_gyro_bias(50);
+        cal_ok = _gyro_cal_ok;
+    }
+    if (!cal_ok) {
+        _health = SensorHealth::FAILED;
+        return false;
+    }
 
     record_success(_time->millis());
     return true;
@@ -102,28 +114,24 @@ bool ICM20689::update() {
 }
 
 void ICM20689::calibrate_gyro_bias(uint16_t sample_count) {
-    if (sample_count == 0) return;
+    if (sample_count == 0 || !_i2c || !_time) return;
 
-    math::Vector3f sum_gyro(0.0f, 0.0f, 0.0f);
-    uint16_t valid_samples = 0;
-
+    GyroCalAccumulator acc;
     for (uint16_t i = 0; i < sample_count; ++i) {
         uint8_t raw[6];
         if (_i2c->read_registers(_i2c_addr, 0x43, raw, 6)) {
-            int16_t gx = static_cast<int16_t>((raw[0] << 8) | raw[1]);
-            int16_t gy = static_cast<int16_t>((raw[2] << 8) | raw[3]);
-            int16_t gz = static_cast<int16_t>((raw[4] << 8) | raw[5]);
-
-            sum_gyro.x += gx * GYRO_SCALE_2000DPS;
-            sum_gyro.y += gy * GYRO_SCALE_2000DPS;
-            sum_gyro.z += gz * GYRO_SCALE_2000DPS;
-            valid_samples++;
+            const int16_t gx = static_cast<int16_t>((raw[0] << 8) | raw[1]);
+            const int16_t gy = static_cast<int16_t>((raw[2] << 8) | raw[3]);
+            const int16_t gz = static_cast<int16_t>((raw[4] << 8) | raw[5]);
+            acc.add(math::Vector3f(gx * GYRO_SCALE_2000DPS, gy * GYRO_SCALE_2000DPS, gz * GYRO_SCALE_2000DPS));
         }
         _time->delay_ms(2);
     }
 
-    if (valid_samples > 0) {
-        _gyro_bias = sum_gyro / static_cast<float>(valid_samples);
+    // Only accept a calibration taken while still; otherwise keep the old bias.
+    _gyro_cal_ok = acc.still();
+    if (_gyro_cal_ok) {
+        _gyro_bias = acc.mean();
     }
 }
 

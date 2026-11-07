@@ -1,4 +1,6 @@
 #include "rov_vehicle.hpp"
+#include <algorithm>
+#include <cmath>
 
 namespace autopilot {
 namespace vehicles {
@@ -95,6 +97,36 @@ void ROVVehicle::setup_pids() {
     _depth_rate_pid.set_limits(-0.7f, 0.7f, 0.3f);
 }
 
+void ROVVehicle::set_mode(ROVMode mode) {
+    if (mode == _mode) return;
+    if (mode == ROVMode::DEPTH_HOLD) {
+        const auto& st = get_state();
+        if (st.altitude_valid) _target_depth_m = -st.altitude_m;
+        _depth_pid.reset();
+        _depth_rate_pid.reset();
+    }
+    _mode = mode;
+}
+
+bool ROVVehicle::check_arming_inputs(std::string& failure_reason) const {
+    if (std::fabs(_user_input.throttle) > 0.1f || std::fabs(_user_input.forward) > 0.1f ||
+        std::fabs(_user_input.lateral) > 0.1f) {
+        failure_reason = "PreArm: thrust sticks not neutral";
+        return false;
+    }
+    return true;
+}
+
+void ROVVehicle::on_arm() {
+    _roll_pid.reset();
+    _pitch_pid.reset();
+    _yaw_pid.reset();
+    _depth_pid.reset();
+    _depth_rate_pid.reset();
+    const auto& st = get_state();
+    if (st.altitude_valid) _target_depth_m = -st.altitude_m;
+}
+
 void ROVVehicle::update_controller(float dt) {
     const auto& state = get_state();
 
@@ -122,7 +154,15 @@ void ROVVehicle::update_controller(float dt) {
     if (_mode == ROVMode::DEPTH_HOLD && state.altitude_valid) {
         // In water, depth = -altitude_m (or depth sensor)
         float current_depth = -state.altitude_m;
-        float desired_sink_rate = _depth_pid.update(_target_depth_m, current_depth, dt);
+        float desired_sink_rate;
+        if (std::fabs(_user_input.throttle) > 0.1f) {
+            // Pilot heave stick commands a climb/sink rate (up to 1 m/s); release re-captures depth.
+            const float s = (std::fabs(_user_input.throttle) - 0.1f) / 0.9f;
+            desired_sink_rate = -std::copysign(std::min(s, 1.0f), _user_input.throttle);
+            _target_depth_m = current_depth;
+        } else {
+            desired_sink_rate = _depth_pid.update(_target_depth_m, current_depth, dt);
+        }
         float current_sink_rate = -state.vertical_velocity_m_s;
         _demands.throttle = -_depth_rate_pid.update(desired_sink_rate, current_sink_rate, dt);
     }

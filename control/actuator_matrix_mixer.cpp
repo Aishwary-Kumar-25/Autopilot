@@ -297,67 +297,105 @@ void ActuatorMatrixMixer::set_num_channels(uint8_t count) {
 
 // ---------------- Output & Mixing Calculation ----------------
 
-void ActuatorMatrixMixer::get_normalized_outputs(const ControlDemands& demands, float* out_values, size_t max_len) const {
+void ActuatorMatrixMixer::get_normalized_outputs(const ControlDemands& demands_in, float* out_values, size_t max_len) const {
     if (!out_values || max_len == 0) return;
 
-    size_t count = std::min<size_t>(_num_channels, max_len);
+    const size_t count = std::min<size_t>(_num_channels, max_len);
 
+    // A NaN/Inf demand (e.g. from a diverged estimator) must never reach an ESC:
+    // treat the whole demand vector as "neutral".
+    ControlDemands demands = demands_in;
+    if (!std::isfinite(demands.roll) || !std::isfinite(demands.pitch) || !std::isfinite(demands.yaw) ||
+        !std::isfinite(demands.throttle) || !std::isfinite(demands.forward) || !std::isfinite(demands.lateral)) {
+        demands = ControlDemands{};
+    }
+
+    // Split every unidirectional output into a roll/pitch(/surge/sway) part, a yaw part and
+    // a collective part so desaturation can trade them off in priority order:
+    //   1. roll/pitch  (keeps the vehicle upright)
+    //   2. yaw
+    //   3. collective  (shifted last, "air mode" style)
+    float rp[hal::PWMOutput::MAX_CHANNELS]{};
+    float yw[hal::PWMOutput::MAX_CHANNELS]{};
     float max_abs_bidirectional = 1.0f;
-    float max_unidirectional = 1.0f;
-    float min_unidirectional = 0.0f;
+    bool any_uni = false;
 
-    // Step 1: Compute raw unconstrained demands
     for (size_t i = 0; i < count; ++i) {
-        if (!_actuators[i].enabled) {
+        const auto& act = _actuators[i];
+        if (!act.enabled) {
             out_values[i] = 0.0f;
             continue;
         }
-
-        const auto& act = _actuators[i];
-        float raw = (demands.roll * act.roll) +
-                    (demands.pitch * act.pitch) +
-                    (demands.yaw * act.yaw) +
-                    (demands.throttle * act.heave) +
-                    (demands.forward * act.surge) +
-                    (demands.lateral * act.sway);
-
-        if (act.reversed) {
-            raw = -raw;
-        }
-        out_values[i] = raw;
-
+        const float sign = act.reversed ? -1.0f : 1.0f;
         if (act.bidirectional) {
-            max_abs_bidirectional = std::max(max_abs_bidirectional, std::abs(raw));
+            const float raw = sign * ((demands.roll * act.roll) + (demands.pitch * act.pitch) + (demands.yaw * act.yaw) +
+                                      (demands.throttle * act.heave) + (demands.forward * act.surge) +
+                                      (demands.lateral * act.sway));
+            out_values[i] = raw;
+            max_abs_bidirectional = std::max(max_abs_bidirectional, std::fabs(raw));
         } else {
-            max_unidirectional = std::max(max_unidirectional, raw);
-            min_unidirectional = std::min(min_unidirectional, raw);
+            any_uni = true;
+            rp[i] = sign * ((demands.roll * act.roll) + (demands.pitch * act.pitch) + (demands.forward * act.surge) +
+                            (demands.lateral * act.sway));
+            yw[i] = sign * demands.yaw * act.yaw;
+            out_values[i] = sign * demands.throttle * act.heave;  // collective part for now
         }
     }
 
-    // Step 2: Desaturation and Dynamic Scaling
-    // Bidirectional (ROV): scale proportionally to prevent saturation clipping and preserve thrust vector angles
+    // Bidirectional (ROV): scale proportionally, preserving the thrust vector direction.
     if (max_abs_bidirectional > 1.0f) {
-        float scale = 1.0f / max_abs_bidirectional;
+        const float scale = 1.0f / max_abs_bidirectional;
         for (size_t i = 0; i < count; ++i) {
-            if (_actuators[i].bidirectional && _actuators[i].enabled) {
-                out_values[i] *= scale;
-            }
+            if (_actuators[i].bidirectional && _actuators[i].enabled) out_values[i] *= scale;
         }
     }
 
-    // Unidirectional (UAV): prioritize roll/pitch/yaw stabilization authority over pure throttle
-    if (max_unidirectional > 1.0f) {
-        float throttle_backoff = max_unidirectional - 1.0f;
-        for (size_t i = 0; i < count; ++i) {
-            if (!_actuators[i].bidirectional && _actuators[i].enabled) {
-                out_values[i] -= throttle_backoff;
+    if (any_uni) {
+        // Spread (max - min) of a set of unidirectional terms.
+        auto spread = [&](float k_rp, float k_y) {
+            float lo = 1e9f, hi = -1e9f;
+            for (size_t i = 0; i < count; ++i) {
+                if (_actuators[i].bidirectional || !_actuators[i].enabled) continue;
+                const float v = k_rp * rp[i] + k_y * yw[i];
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+            return hi - lo;
+        };
+
+        // Motors can only span [0, 1], so the differential part must fit in a spread of 1.
+        float k_rp = 1.0f, k_y = 1.0f;
+        if (spread(1.0f, 1.0f) > 1.0f) {
+            const float s_rp = spread(1.0f, 0.0f);
+            if (s_rp >= 1.0f) {
+                // Roll/pitch alone saturate: scale them to fit, drop yaw entirely.
+                k_rp = 1.0f / s_rp;
+                k_y = 0.0f;
+            } else {
+                // Keep full roll/pitch, give yaw as much as still fits (bisection, spread is convex in k_y).
+                float lo = 0.0f, hi = 1.0f;
+                for (int it = 0; it < 12; ++it) {
+                    const float mid = 0.5f * (lo + hi);
+                    if (spread(1.0f, mid) <= 1.0f) lo = mid; else hi = mid;
+                }
+                k_y = lo;
             }
         }
-    }
-    if (min_unidirectional < 0.0f) {
+
+        // Compose and find the out-of-range amount, then shift the collective.
+        float lo = 1e9f, hi = -1e9f;
         for (size_t i = 0; i < count; ++i) {
-            if (!_actuators[i].bidirectional && _actuators[i].enabled) {
-                out_values[i] -= min_unidirectional;
+            if (_actuators[i].bidirectional || !_actuators[i].enabled) continue;
+            out_values[i] += k_rp * rp[i] + k_y * yw[i];
+            lo = std::min(lo, out_values[i]);
+            hi = std::max(hi, out_values[i]);
+        }
+        float shift = 0.0f;
+        if (hi > 1.0f) shift = 1.0f - hi;      // reduce collective (spread <= 1 keeps lo >= 0)
+        else if (lo < 0.0f) shift = -lo;       // raise collective to keep differential authority
+        if (shift != 0.0f) {
+            for (size_t i = 0; i < count; ++i) {
+                if (!_actuators[i].bidirectional && _actuators[i].enabled) out_values[i] += shift;
             }
         }
     }
@@ -454,11 +492,31 @@ bool ActuatorMatrixMixer::generate_dronecan_esc_frame(const ControlDemands& dema
 
 bool ActuatorMatrixMixer::send_dronecan_esc_commands(const ControlDemands& demands, hal::CANDevice* can, uint8_t& transfer_id, bool armed) const {
     if (!can) return false;
-    hal::CANFrame frame;
-    if (generate_dronecan_esc_frame(demands, transfer_id, frame, armed)) {
-        return can->send_frame(frame);
+    // All channels (RawCommand carries up to 20). More than 4 ESCs need a multi-frame
+    // transfer; the single-frame helper above only covers the first four.
+    constexpr uint8_t PRIORITY = 20;
+    constexpr uint8_t SOURCE_NODE_ID = 1;
+    float normalized[hal::PWMOutput::MAX_CHANNELS]{0.0f};
+    if (armed) get_normalized_outputs(demands, normalized, _num_channels);
+
+    int16_t esc_cmd[hal::PWMOutput::MAX_CHANNELS]{};
+    const uint8_t count = _num_channels;
+    for (uint8_t i = 0; i < count; ++i) {
+        if (_actuators[i].enabled && armed) {
+            esc_cmd[i] = static_cast<int16_t>(std::lround(std::clamp(normalized[i], -1.0f, 1.0f) * 8191.0f));
+        }
     }
-    return false;
+    uint8_t payload[32];
+    const size_t len = drivers::dronecan::encode_esc_raw_command(esc_cmd, count, payload, sizeof(payload));
+    if (len == 0) return false;
+    hal::CANFrame frames[6];
+    const size_t n = drivers::dronecan::make_broadcast_frames(PRIORITY, drivers::dronecan::MSG_ID_ESC_RAW_COMMAND,
+                                                              SOURCE_NODE_ID, transfer_id, payload, len, frames, 6);
+    if (n == 0) return false;
+    transfer_id = (transfer_id + 1) & 0x1F;
+    bool ok = true;
+    for (size_t i = 0; i < n; ++i) ok = can->send_frame(frames[i]) && ok;
+    return ok;
 }
 
 } // namespace control

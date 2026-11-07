@@ -31,7 +31,7 @@ public:
 
     /**
      * @brief Dynamically switch vehicle profile at runtime.
-     * Safely disarms actuators before reconfiguring controllers and mixers.
+     * Refused (returns false) while armed: the vehicle must be disarmed first.
      */
     bool switch_vehicle(VehicleType new_type, std::string& reason);
 

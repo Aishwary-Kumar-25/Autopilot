@@ -32,7 +32,9 @@ private:
     math::Vector3f _field_gauss{0.0f, 0.0f, 0.0f};
     float _heading_rad{0.0f};
 
-    static constexpr float GAUSS_SCALE_2G = 1.0f / 12000.0f;
+    // init() selects the 8 G range (CONTROL_1 = 0x1D): 3000 LSB/G. (The old 2 G
+    // scale, 12000 LSB/G, made every reading 4x too small.)
+    static constexpr float GAUSS_SCALE_8G = 1.0f / 3000.0f;
 };
 
 } // namespace drivers

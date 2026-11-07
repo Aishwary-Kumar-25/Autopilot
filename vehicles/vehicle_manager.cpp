@@ -64,10 +64,11 @@ bool VehicleManager::switch_vehicle(VehicleType new_type, std::string& reason) {
         return true;
     }
 
-    // Safety Interlock: Force disarm before switching vehicle profile
+    // Safety interlock: refuse while armed. Silently disarming here would cut the
+    // motors of a flying multicopter (or a sub at depth) on a single bad command.
     if (is_armed()) {
-        disarm();
-        reason = "Safety Interlock: Disarmed active actuators before vehicle profile switch";
+        reason = "Refused: disarm before switching vehicle profile";
+        return false;
     }
 
     instantiate_vehicle(new_type);
@@ -88,6 +89,7 @@ void VehicleManager::set_user_inputs(float roll, float pitch, float yaw, float t
 }
 
 bool VehicleManager::configure_rov_thrusters(uint8_t count, ROVLayout layout) {
+    if (is_armed()) return false; // changing the allocation matrix under running thrusters is unsafe
     if (_active_type != VehicleType::ROV_SUBMARINE) {
         std::string reason;
         if (!switch_vehicle(VehicleType::ROV_SUBMARINE, reason)) {
@@ -102,6 +104,7 @@ bool VehicleManager::configure_rov_thrusters(uint8_t count, ROVLayout layout) {
 }
 
 bool VehicleManager::configure_uav_rotors(uint8_t count) {
+    if (is_armed()) return false; // changing the motor layout in flight is unsafe
     if (_active_type != VehicleType::UAV_MULTICOPTER) {
         std::string reason;
         if (!switch_vehicle(VehicleType::UAV_MULTICOPTER, reason)) {

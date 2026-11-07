@@ -33,11 +33,11 @@ bool BMP280::read_calibration_data() {
     _dig_P8 = static_cast<int16_t>(calib[21] << 8 | calib[20]);
     _dig_P9 = static_cast<int16_t>(calib[23] << 8 | calib[22]);
 
-    if (_dig_T1 == 0 || _dig_P1 < 100) {
-        _dig_T1 = 27504; _dig_T2 = 26435; _dig_T3 = -1000;
-        _dig_P1 = 36477; _dig_P2 = -10685; _dig_P3 = 3024;
-        _dig_P4 = 2855;  _dig_P5 = 140;    _dig_P6 = -7;
-        _dig_P7 = 15500; _dig_P8 = -14600; _dig_P9 = 6000;
+    // Blank/corrupt NVM (all 0x00 or 0xFF reads) means a broken chip or bus. Never
+    // substitute the datasheet's example coefficients: that yields a plausible but
+    // wrong pressure that the health checks can't catch.
+    if (_dig_T1 == 0 || _dig_P1 == 0 || _dig_T1 == 0xFFFF || _dig_P1 == 0xFFFF) {
+        return false;
     }
 
     return true;
@@ -77,8 +77,13 @@ bool BMP280::init() {
 
     // Initial update to seed ground reference
     _time->delay_ms(15);
+    _have_read = false;
     if (update()) {
         set_ground_reference(_pressure_pa);
+        // The first altitude was computed against the default 101325 Pa reference;
+        // restart the filter so it doesn't begin tens of metres off and decay.
+        _altitude_filter.reset();
+        _relative_altitude_m = 0.0f;
     }
 
     record_success(_time->millis());
@@ -90,6 +95,16 @@ bool BMP280::update() {
         record_failure();
         return false;
     }
+
+    // The chip produces ~26 samples/s (x16 pressure oversampling). Reading it every
+    // 400 Hz loop only repeats values and burns I2C bus time, and the altitude
+    // filter is designed for 50 Hz, so read at most every MIN_READ_INTERVAL_MS.
+    const uint32_t now = _time->millis();
+    if (_have_read && now - _last_read_ms < MIN_READ_INTERVAL_MS) {
+        return true;
+    }
+    _last_read_ms = now;
+    _have_read = true;
 
     uint8_t data[6];
     if (!_i2c->read_registers(_i2c_addr, REG_PRESS_MSB, data, 6)) {
@@ -111,10 +126,12 @@ bool BMP280::update() {
     // Pressure compensation formula from Bosch datasheet
     int64_t p_var1 = static_cast<int64_t>(_t_fine) - 128000;
     int64_t p_var2 = p_var1 * p_var1 * static_cast<int64_t>(_dig_P6);
-    p_var2 = p_var2 + ((p_var1 * static_cast<int64_t>(_dig_P5)) << 17);
-    p_var2 = p_var2 + (static_cast<int64_t>(_dig_P4) << 35);
+    // Bosch's reference code left-shifts signed (possibly negative) values, which is
+    // undefined behaviour in C++17; multiply by the power of two instead (same result).
+    p_var2 = p_var2 + ((p_var1 * static_cast<int64_t>(_dig_P5)) * 131072);
+    p_var2 = p_var2 + (static_cast<int64_t>(_dig_P4) * (static_cast<int64_t>(1) << 35));
     p_var1 = ((p_var1 * p_var1 * static_cast<int64_t>(_dig_P3)) >> 8) +
-             ((p_var1 * static_cast<int64_t>(_dig_P2)) << 12);
+             ((p_var1 * static_cast<int64_t>(_dig_P2)) * 4096);
     p_var1 = (((static_cast<int64_t>(1) << 47) + p_var1)) * static_cast<int64_t>(_dig_P1) >> 33;
 
     if (p_var1 == 0) {

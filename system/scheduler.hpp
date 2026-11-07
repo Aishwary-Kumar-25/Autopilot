@@ -12,8 +12,10 @@ struct ScheduledTask {
     const char* name;
     std::function<void()> func;
     uint32_t interval_micros;
-    uint64_t last_run_micros{0};
-    uint32_t max_run_time_micros{0};
+    uint64_t next_run_micros{0};
+    uint32_t max_run_time_micros{0};   // worst observed execution time
+    uint32_t overruns{0};              // times the task was more than one period late
+    bool started{false};
 };
 
 /**
@@ -30,6 +32,8 @@ public:
      * @brief Run scheduled tasks that are due.
      */
     void run();
+
+    const std::vector<ScheduledTask>& tasks() const { return _tasks; }
 
 private:
     hal::Time* _time{nullptr};

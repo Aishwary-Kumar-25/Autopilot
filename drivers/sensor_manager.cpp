@@ -157,25 +157,30 @@ void SensorManager::evaluate(Monitor& m, uint32_t now_ms) {
 void SensorManager::update_consistency() {
     // Nearest-neighbour gyro disagreement: with 3 IMUs one bad unit is far from
     // both others, while each good one has a close neighbour.
-    std::vector<Monitor*> imus;
+    // Runs every loop: fixed-size array, no heap allocation (was a std::vector).
+    constexpr size_t MAX_IMUS = 8;
+    Monitor* imus[MAX_IMUS];
+    size_t n = 0;
     for (auto& m : _monitors) {
-        if (m.sensor->type() == SensorType::IMU && m.verdict != SensorHealth::FAILED &&
+        if (n < MAX_IMUS && m.sensor->type() == SensorType::IMU && m.verdict != SensorHealth::FAILED &&
             m.sensor->health() == SensorHealth::HEALTHY) {
-            imus.push_back(&m);
+            imus[n++] = &m;
         }
     }
-    if (imus.size() < 2) {
-        for (auto* m : imus) m->consistency_err = 0.0f;
+    if (n < 2) {
+        for (size_t i = 0; i < n; ++i) imus[i]->consistency_err = 0.0f;
         return;
     }
-    for (auto* a : imus) {
+    for (size_t i = 0; i < n; ++i) {
+        Monitor* a = imus[i];
         const auto& ga = static_cast<IMUSensor*>(a->sensor)->get_gyro();
         float best = 1e9f;
-        for (auto* b : imus) {
-            if (a == b) continue;
-            const auto d = ga - static_cast<IMUSensor*>(b->sensor)->get_gyro();
-            best = std::min(best, d.length());
+        for (size_t j = 0; j < n; ++j) {
+            if (i == j) continue;
+            const auto d = ga - static_cast<IMUSensor*>(imus[j]->sensor)->get_gyro();
+            best = std::min(best, d.length_squared());
         }
+        best = std::sqrt(best); // one sqrt per IMU instead of one per pair
         const float err = best / GYRO_CONSISTENCY_RAD_S;
         a->consistency_err += 0.05f * (err - a->consistency_err); // low-pass so noise doesn't trip it
     }

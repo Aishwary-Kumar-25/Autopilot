@@ -127,8 +127,12 @@ public:
     void set_rotation(SensorRotation r) { _rotation = r; }
     SensorRotation get_rotation() const { return _rotation; }
 
+    /** False if the last gyro bias calibration saw motion (bias was not updated). */
+    bool gyro_cal_ok() const { return _gyro_cal_ok; }
+
 protected:
     SensorRotation _rotation{SensorRotation::NONE};
+    bool _gyro_cal_ok{true};
 };
 
 /**
@@ -164,8 +168,31 @@ public:
         return h;
     }
 
+    /**
+     * Hard/soft-iron calibration (see drivers/mag/compass_calibrator.hpp), in the
+     * body frame: corrected = (field - offset) * scale.
+     */
+    void set_calibration(const math::Vector3f& offset, const math::Vector3f& scale) {
+        _cal_offset = offset;
+        _cal_scale = scale;
+    }
+    const math::Vector3f& get_cal_offset() const { return _cal_offset; }
+    const math::Vector3f& get_cal_scale() const { return _cal_scale; }
+    /** Body-frame field before calibration: feed this to a CompassCalibrator. */
+    const math::Vector3f& get_field_uncalibrated() const { return _field_uncal; }
+
 protected:
     SensorRotation _rotation{SensorRotation::NONE};
+    math::Vector3f _cal_offset{0.0f, 0.0f, 0.0f};
+    math::Vector3f _cal_scale{1.0f, 1.0f, 1.0f};
+    math::Vector3f _field_uncal{0.0f, 0.0f, 0.0f};
+
+    /** Drivers call this with the body-frame field; returns the calibrated field. */
+    math::Vector3f apply_calibration(const math::Vector3f& body_field) {
+        _field_uncal = body_field;
+        const math::Vector3f d = body_field - _cal_offset;
+        return math::Vector3f(d.x * _cal_scale.x, d.y * _cal_scale.y, d.z * _cal_scale.z);
+    }
 };
 
 /**
@@ -175,6 +202,7 @@ struct GPSData {
     bool has_fix{false};
     uint8_t fix_type{0};        // 0=No fix, 2=2D, 3=3D
     uint8_t satellites{0};
+    float hdop{99.99f};         // horizontal dilution of precision (lower is better)
     double latitude_deg{0.0};
     double longitude_deg{0.0};
     float altitude_msl_m{0.0f};

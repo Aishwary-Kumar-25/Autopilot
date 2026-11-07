@@ -19,14 +19,20 @@ public:
 
     const char* get_type_name() const override { return "UGV Ground Vehicle (Rover)"; }
 
-    void set_mode(UGVMode mode) { _mode = mode; }
+    /** Entering HEADING_HOLD/SPEED_HOLD captures the current heading as the target. */
+    void set_mode(UGVMode mode);
     UGVMode get_mode() const { return _mode; }
 
     void set_target_heading(float heading_rad) { _target_heading_rad = heading_rad; }
     void set_target_speed(float speed_m_s) { _target_speed_m_s = speed_m_s; }
 
+    /** Heading-rate damping gain (steering per rad/s of yaw rate). */
+    static constexpr float HEADING_KD = 0.08f;
+
 protected:
     void update_controller(float dt) override;
+    bool check_arming_inputs(std::string& failure_reason) const override;
+    void on_arm() override;
 
 private:
     UGVMode _mode{UGVMode::MANUAL};

@@ -29,9 +29,8 @@ bool QMC5883L::init() {
     // Define SET/RESET period (recommended 0x01)
     _i2c->write_byte(_i2c_addr, REG_SET_RESET, 0x01);
 
-    // Continuous mode, 100Hz ODR, 2G range, 512 oversampling ratio
-    // Mode = Continuous (0b01), ODR = 100Hz (0b01 << 2), RNG = 2G (0b00 << 4), OSR = 512 (0b00 << 6)
-    // 0b00000101 = 0x0D (continuous 50Hz) or 0b00011101 = 0x1D (continuous 200Hz)
+    // CONTROL_1 = 0x1D: MODE=01 continuous, ODR=11 200 Hz, RNG=01 8 G, OSR=00 512.
+    // 8 G (not 2 G) so motor/battery fields near the frame can't saturate the chip.
     if (!_i2c->write_byte(_i2c_addr, REG_CONTROL_1, 0x1D)) {
         _health = SensorHealth::FAILED;
         return false;
@@ -47,6 +46,22 @@ bool QMC5883L::update() {
         return false;
     }
 
+    // Status first: DRDY says a new sample exists (reading the data clears it), so
+    // the 6-byte data read only happens at the chip's 200 Hz rate, not every loop.
+    uint8_t status = 0;
+    if (!_i2c->read_byte(_i2c_addr, REG_STATUS, status)) {
+        record_failure();
+        return false;
+    }
+    if (status & 0x02) {
+        // OVL: field beyond the 8 G range, the sample is garbage.
+        record_failure();
+        return false;
+    }
+    if (!(status & 0x01)) {
+        return true; // no new sample yet (bus OK); timeouts are judged by SensorManager
+    }
+
     uint8_t raw[6];
     if (!_i2c->read_registers(_i2c_addr, REG_DATA_OUT_X_LSB, raw, 6)) {
         record_failure();
@@ -58,12 +73,12 @@ bool QMC5883L::update() {
     int16_t y = static_cast<int16_t>((raw[3] << 8) | raw[2]);
     int16_t z = static_cast<int16_t>((raw[5] << 8) | raw[4]);
 
-    _field_gauss.x = x * GAUSS_SCALE_2G;
-    _field_gauss.y = y * GAUSS_SCALE_2G;
-    _field_gauss.z = z * GAUSS_SCALE_2G;
+    _field_gauss.x = x * GAUSS_SCALE_8G;
+    _field_gauss.y = y * GAUSS_SCALE_8G;
+    _field_gauss.z = z * GAUSS_SCALE_8G;
 
     // chip axes -> FRD body frame, then planar heading
-    _field_gauss = apply_rotation(_rotation, _field_gauss);
+    _field_gauss = apply_calibration(apply_rotation(_rotation, _field_gauss));
     _heading_rad = heading_from_field(_field_gauss);
 
     record_success(_time->millis());

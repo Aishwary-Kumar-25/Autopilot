@@ -257,6 +257,16 @@ int main() {
     }
     std::cout << "  -> Hexacopter (6 Rotors) Mixing [PASSED]\n";
 
+    // Reconfiguring the motor layout or switching profile is refused while armed
+    CHECK(!vm.configure_uav_rotors(8));
+    CHECK(vm.get_active_actuator_count() == 6);
+    {
+        std::string why;
+        CHECK(!vm.switch_vehicle(vehicles::VehicleType::ROV_SUBMARINE, why));
+        CHECK(vm.is_armed());
+        CHECK(vm.get_active_type() == vehicles::VehicleType::UAV_MULTICOPTER);
+    }
+    vm.disarm();
     CHECK(vm.configure_uav_rotors(8));
     CHECK(vm.get_active_actuator_count() == 8);
     std::cout << "  -> Octacopter (8 Rotors) Mixing [PASSED]\n";

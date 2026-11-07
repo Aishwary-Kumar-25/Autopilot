@@ -38,6 +38,7 @@ set(CORE_SOURCES
     hal/stm32/stm32_hal.cpp
     hal/stm32/stm32_pwm.cpp
     drivers/sensor_manager.cpp
+    drivers/mag/compass_calibrator.cpp
     fusion/madgwick.cpp
     fusion/complementary.cpp
     fusion/ahrs_interface.cpp
@@ -120,6 +121,13 @@ if(BUILD_TESTS)
     add_executable(test_failsafe tests/test_failsafe.cpp)
     target_link_libraries(test_failsafe PRIVATE autopilot_core pthread)
     add_test(NAME test_failsafe COMMAND test_failsafe)
+
+    # Review fixes (darsh branch): vehicle safety, mixer, sensors/drivers, filters
+    foreach(t test_vehicle_safety test_mixer_saturation test_drivers test_filters_and_cal)
+        add_executable(${t} tests/${t}.cpp)
+        target_link_libraries(${t} PRIVATE autopilot_core pthread)
+        add_test(NAME ${t} COMMAND ${t})
+    endforeach()
 
     # Closed-loop software-in-the-loop flight (sim/quad_sim.hpp)
     add_executable(test_sitl_flight tests/test_sitl_flight.cpp)

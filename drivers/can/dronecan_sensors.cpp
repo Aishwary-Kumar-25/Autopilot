@@ -84,7 +84,7 @@ bool DroneCAN_Compass::update() {
 }
 
 void DroneCAN_Compass::ingest_mag_field(const math::Vector3f& field_gauss, uint32_t timestamp_ms) {
-    _field_gauss = field_gauss;
+    _field_gauss = apply_calibration(field_gauss);
     _last_packet_ms = timestamp_ms;
 
     _heading_rad = heading_from_field(_field_gauss);

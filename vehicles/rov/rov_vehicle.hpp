@@ -28,7 +28,8 @@ public:
 
     const char* get_type_name() const override;
 
-    void set_mode(ROVMode mode) { _mode = mode; }
+    /** Entering DEPTH_HOLD captures the current depth as the target. */
+    void set_mode(ROVMode mode);
     ROVMode get_mode() const { return _mode; }
 
     void set_target_depth(float depth_m) { _target_depth_m = depth_m; }
@@ -52,6 +53,8 @@ public:
 
 protected:
     void update_controller(float dt) override;
+    bool check_arming_inputs(std::string& failure_reason) const override;
+    void on_arm() override;
 
 private:
     ROVMode _mode{ROVMode::STABILIZE};

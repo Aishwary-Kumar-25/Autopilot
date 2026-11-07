@@ -68,6 +68,9 @@ bool VehicleBase::arm(std::string& failure_reason) {
         failure_reason = "PreArm: no RC input";
         return false;
     }
+    if (!check_arming_inputs(failure_reason)) {
+        return false;
+    }
     if (_arming.arm(failure_reason)) {
         _failsafe.reset();
         _sensors->set_armed(true);   // latch sensor failures while flying
@@ -132,7 +135,13 @@ void VehicleBase::step(float dt) {
             }
             break;
         case control::FailsafeAction::NONE:
-            update_controller(dt);
+            // Disarmed: no controller at all, so integrators can't wind up on the bench
+            // and kick when the vehicle is armed.
+            if (_arming.is_armed()) {
+                update_controller(dt);
+            } else {
+                _demands = control::ControlDemands{};
+            }
             break;
     }
 

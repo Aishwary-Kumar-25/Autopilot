@@ -67,6 +67,37 @@ void UAVVehicle::reset_pids() {
     _velocity_z_pid.reset();
 }
 
+void UAVVehicle::set_mode(UAVFlightMode mode) {
+    if (mode == _mode) return;
+    const auto& st = get_state();
+    if (mode == UAVFlightMode::ALT_HOLD) {
+        _target_altitude_m = st.altitude_valid ? st.altitude_m : _target_altitude_m;
+        _altitude_pid.reset();
+        _velocity_z_pid.reset();
+        // Flying steadily on manual collective: that collective is the best hover guess.
+        if (is_armed() && !_landed && std::fabs(st.vertical_velocity_m_s) < 0.5f && _last_throttle > 0.0f) {
+            const auto& e = st.euler_rad;
+            set_hover_throttle(_last_throttle * std::max(std::cos(e.x) * std::cos(e.y), 0.7f));
+        }
+    }
+    _mode = mode;
+}
+
+bool UAVVehicle::check_arming_inputs(std::string& failure_reason) const {
+    const float thr = _user_input.throttle;
+    if (_mode == UAVFlightMode::ALT_HOLD) {
+        // Mid stick holds; only above the deadband would it climb.
+        if (thr > 0.5f + STICK_DEADBAND) {
+            failure_reason = "PreArm: throttle above mid stick (ALT_HOLD)";
+            return false;
+        }
+    } else if (thr >= THROTTLE_GROUND) {
+        failure_reason = "PreArm: throttle not low";
+        return false;
+    }
+    return true;
+}
+
 void UAVVehicle::on_arm() {
     // Integrators from the last flight (or from sitting on the bench) must not
     // carry into a new takeoff.
@@ -83,14 +114,29 @@ void UAVVehicle::on_disarm() {
     _last_throttle = 0.0f;
 }
 
+void UAVVehicle::set_gyro_filters(float lpf_hz, float notch_hz, float notch_bw_hz, float sample_hz) {
+    for (int i = 0; i < 3; ++i) {
+        if (lpf_hz > 0.0f) _gyro_lpf[i].set_lowpass(lpf_hz, sample_hz); else _gyro_lpf[i].set_passthrough();
+        if (notch_hz > 0.0f) _gyro_notch[i].set_notch(notch_hz, notch_bw_hz, sample_hz); else _gyro_notch[i].set_passthrough();
+    }
+}
+
+math::Vector3f UAVVehicle::filtered_rates() {
+    const auto& w = get_state().angular_velocity;
+    return math::Vector3f(_gyro_lpf[0].apply(_gyro_notch[0].apply(w.x)),
+                          _gyro_lpf[1].apply(_gyro_notch[1].apply(w.y)),
+                          _gyro_lpf[2].apply(_gyro_notch[2].apply(w.z)));
+}
+
 void UAVVehicle::run_attitude(float target_roll, float target_pitch, float target_yaw_rate, float dt, bool integrate) {
     const auto& state = get_state();
+    const math::Vector3f rates = filtered_rates();
     // Angle error -> desired body rate (P only), rate error -> torque demand (PID)
     const float desired_roll_rate = _roll_angle_pid.update(target_roll, state.euler_rad.x, dt, integrate);
     const float desired_pitch_rate = _pitch_angle_pid.update(target_pitch, state.euler_rad.y, dt, integrate);
-    _demands.roll = _roll_rate_pid.update(desired_roll_rate, state.angular_velocity.x, dt, integrate);
-    _demands.pitch = _pitch_rate_pid.update(desired_pitch_rate, state.angular_velocity.y, dt, integrate);
-    _demands.yaw = _yaw_rate_pid.update(target_yaw_rate, state.angular_velocity.z, dt, integrate);
+    _demands.roll = _roll_rate_pid.update(desired_roll_rate, rates.x, dt, integrate);
+    _demands.pitch = _pitch_rate_pid.update(desired_pitch_rate, rates.y, dt, integrate);
+    _demands.yaw = _yaw_rate_pid.update(target_yaw_rate, rates.z, dt, integrate);
     _demands.forward = 0.0f;
     _demands.lateral = 0.0f;
 }

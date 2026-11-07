@@ -134,3 +134,47 @@ Other changes:
 - An EKF that fuses GPS velocity and position and estimates gyro bias. The GPS tilt correction in section 10 has no integral term, so a gyro bias of b leaves a tilt error of about b / 1 s (0.6° for 0.01 rad/s).
 - Without GPS, the accelerometer still reads drag as tilt, so the estimate is wrong while a fast-moving quad slows down. A rotor-drag model would fix this.
 - A first build on real hardware: the STM32 code compiles only inside a CubeMX project, and nobody has built it there yet.
+
+---
+
+# Review round 2: bugs, STM32 optimizations, new features (commit 4)
+
+Everything below was found and fixed without hardware. `ctest` now runs 12 test
+programs (4 new here), all passing, also under AddressSanitizer + UBSan and with clang.
+
+## Bugs fixed
+
+| Area | Problem | Fix | Test |
+|---|---|---|---|
+| Mixer | When a demand saturated motors on both ends, the shift used the pre-shift minimum, so outputs were clipped and roll and yaw were distorted together. | Prioritised desaturation: roll/pitch first, then as much yaw as fits (bisection), then collective shifted (air-mode). | `test_mixer_saturation` (incl. 5000 random demands: always in range, roll/pitch never inverted) |
+| Mixer | A NaN/Inf demand (diverged estimator) went straight to the PWM cast (undefined behaviour). | Non-finite demands become neutral. | same |
+| DroneCAN ESC | Only the first 4 ESCs were ever commanded; a hexa/octa on CAN ESCs would lose motors 5+. | `send_dronecan_esc_commands` sends all channels as a multi-frame RawCommand. | same (8-motor transfer reassembled and decoded) |
+| Arming | Arming with the throttle up spun the motors straight up (STABILIZE/MANUAL). Same for a rover/sub with drive sticks deflected. | `check_arming_inputs()` per vehicle: UAV throttle low (ALT_HOLD: not above mid stick), UGV/ROV sticks neutral. | `test_vehicle_safety` |
+| Profile switch | `switch_vehicle()` while armed silently **disarmed** the vehicle: one bad command dropped a flying drone. `configure_uav_rotors()` / `configure_rov_thrusters()` changed the motor layout in flight. | All three are refused while armed. | `test_vehicle_controls` 3G |
+| Controllers | Controllers ran while disarmed, so UGV/ROV integrators wound up on the bench and kicked on arming. | No controller step while disarmed; UGV/ROV PIDs reset on arm. | `test_vehicle_safety` |
+| ALT_HOLD | Switching STABILIZE -> ALT_HOLD in flight held the altitude captured at **arming** (usually 0 m): the drone dived at 2 m/s toward the ground. | `set_mode()` captures the current altitude and seeds hover throttle from the manual collective. | `test_vehicle_safety` |
+| Altitude | Baro failover stepped the altitude by the offset between the two baros (8.3 m in the test), making ALT_HOLD jump. | Re-reference the new baro to the current estimate. | `test_vehicle_safety` (old code: 8.35 m jump, new: 0) |
+| UGV | Heading hold differentiated the wrapped heading error: a derivative kick on every new target and a spike at the +-180 deg wrap. Speed hold used unsigned speed, so reversing never worked. | D term from the gyro yaw rate; signed speed along the heading; heading captured on mode entry. | `test_vehicle_safety` |
+| ROV | DEPTH_HOLD ignored the heave stick and held a stale target. | Stick commands sink/climb rate and re-captures depth; target captured on mode entry and arm. | |
+| QMC5883L | Configured for the 8 G range but scaled as 2 G: every reading 4x too small. Status register (DRDY/overflow) never read. | 8 G scale; read status first, skip the data read when no new sample, reject overflow. | `test_drivers` |
+| BMP280 | Blank calibration NVM silently replaced by the datasheet's example coefficients (plausible but wrong pressure). First altitude sample was taken against 101325 Pa, so the filter started tens of metres off. Signed left shifts in the Bosch formula are undefined behaviour in C++17 (UBSan caught it). | Fail init on blank NVM; restart the filter after setting the ground reference; multiply instead of shift. | `test_drivers` (incl. Bosch datasheet worked example: 25.08 C, 100653.27 Pa) |
+| Gyro cal | Bias calibration accepted samples taken while the vehicle moved, baking the motion into the bias (attitude drifts all flight). | `GyroCalAccumulator`: mean/variance check, retries, init fails until still (re-probed every second while disarmed). | `test_drivers` |
+| GPS | RMC status V didn't clear the fix. GGA couldn't tell 2D from 3D. | V clears the fix; GSA parsed for fix type and HDOP (a GPS without a 3D fix is DEGRADED, see section 10). | `test_drivers` |
+| Scheduler | Re-arming each task from "now" made every task run slow (400 Hz task ran ~370 Hz); with simulated time starting at 0 a task ran on every call. | Phase-locked deadlines with overrun counter and max run time. | `test_drivers` |
+
+## STM32 optimizations
+
+- **No heap allocation in the flight loop:** `SensorManager::update_consistency()` built a `std::vector` every loop (400 Hz); now a fixed array, and one `sqrt` per IMU instead of one per pair.
+- **NMEA parser rewritten** with a fixed buffer and in-place tokenizer. The old one allocated a `std::vector<std::string>` and a `std::stringstream` for every sentence, and pulled iostreams into the firmware image (tens of KB of flash on newlib).
+- **Less I2C bus time:** the BMP280 is read at most every 20 ms (the chip makes ~26 samples/s; the loop read it 400 times/s), and the QMC5883L data is read only when DRDY is set. This also makes the baro's 50 Hz altitude filter actually run at 50 Hz.
+
+## New features (hardware-free)
+
+- `drivers/mag/compass_calibrator.*`: hard + soft iron (axis-aligned ellipsoid) least-squares fit with coverage, residual and plausibility checks. 64 bytes of state, no sample buffer, so it can run on the MCU. `CompassSensor::set_calibration()` applies it in the QMC5883L and DroneCAN compass drivers.
+- `math/biquad_filter.hpp`: 2-pole Butterworth low-pass and notch filters. `UAVVehicle::set_gyro_filters()` adds them to the rate loop (off by default, so existing tuning is unchanged).
+- `tests/fake_sensors.hpp`: scriptable IMU/baro for driving the real stack in unit tests.
+
+## Still open
+
+- MPU6050 and ICM20689 drivers are near-identical; a shared InvenSense base class would save flash.
+- Compass calibration still needs a trigger (GCS command or stick gesture) and parameter storage for the result.
