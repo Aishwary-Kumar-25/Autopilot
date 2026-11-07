@@ -48,7 +48,8 @@ Autopilot_eclub/
 ├── docs/                       # Technical specifications
 │   ├── ARCHITECTURE.md         # System architecture & dataflow diagrams
 │   ├── SENSOR_PLUG_AND_PLAY.md # PnP sensor pinouts, DroneCAN, & hot-swap
-│   └── HARDWARE_STM32_HAL.md   # STM32 class pinouts, timers, & cross-compile
+│   ├── HARDWARE_STM32_HAL.md   # STM32 class pinouts, timers, & cross-compile
+│   └── ACTUATOR_MATRIX_MIXING.md # 2-16 channel matrix mixer & geometry presets
 ├── hal/                        # Hardware Abstraction Layer
 │   ├── hal.hpp                 # Bus, Timer, PWM, & Peripheral interfaces
 │   ├── posix/                  # Linux/POSIX host simulation & mock hardware

@@ -90,7 +90,7 @@ The **E-Club Autopilot** is a modular, high-reliability flight stack and robotic
   - `complementary.hpp/cpp`: 3rd-order baro-inertial altitude and climb-rate estimator.
   - `state_types.hpp`: Unified `VehicleState` struct.
 - `math/`: Fast embedded 3D math (Vectors, Quaternions, Matrices, Low-Pass Filters, PID controllers).
-- `control/`: Arming logic, pre-arm safety validators, and `ActuatorMatrixMixer` (generalized 2-16 channel control allocation, dynamic thruster selection, and DroneCAN ESC support).
+- `control/`: Arming logic, pre-arm safety validators, and `ActuatorMatrixMixer` (generalized 2-16 channel control allocation, dynamic thruster selection, and DroneCAN ESC support). See [ACTUATOR_MATRIX_MIXING.md](file:///home/aishwary/SRSahooProject/Autopilot_eclub/docs/ACTUATOR_MATRIX_MIXING.md) for full geometry mathematics.
 - `vehicles/`: Vehicle-specific flight/motion dynamics (UAV Quad-X, UGV Rover, ROV Submarine).
 - `system/`:
   - `pubsub.hpp`: **Zero-allocation Publish/Subscribe middleware**.
