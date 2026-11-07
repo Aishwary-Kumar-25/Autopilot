@@ -2,12 +2,11 @@
 
 ## Overview
 
-The **E-Club Autopilot** is a modular, high-reliability flight stack and robotics autopilot designed from scratch. It solves a primary vulnerability of traditional monolithic flight controller boards: **on-board soldered sensors that cannot be replaced when they fail or burn out**.
-
-The codebase is engineered around three foundational pillars:
-1. **Plug-and-Play Swappable Sensors**: Auto-discovered over standard serial buses (I2C/SPI), continuously monitored for health, with real-time failover and runtime hot-swap capability.
-2. **Universal Sensor Fusion Engine**: A vehicle-agnostic state estimator combining 6-DOF/9-DOF Madgwick attitude estimation and 3rd-order baro-inertial complementary altitude/velocity estimation.
-3. **Modular Vehicle Control & Mixing**: Distinct control pipelines for **UAVs (Multirotors)**, **UGVs (Ground Vehicles/Rovers)**, and **ROVs (Underwater Submarines)** running on top of identical sensor fusion states.
+The **E-Club Autopilot** is a modular, high-reliability flight stack and robotics autopilot designed from scratch. It solves key vulnerabilities found in traditional monolithic flight controller boards (like ArduPilot and early Pixhawks):
+1. **Plug-and-Play Swappable Sensors**: Replaced noise-prone, lockup-vulnerable I2C with **CAN Bus (DroneCAN)** differential signaling as the primary external sensor bus, with I2C/SPI maintained for bench development.
+2. **Zero-Allocation Pub/Sub Middleware**: Decouples data producers from consumers. Allows a **single unified firmware binary** to switch dynamically between UAV, UGV, and ROV vehicle profiles at runtime without reflashing.
+3. **Modular Compile-Time Pruning**: Compile only the drivers needed for the target vehicle, eliminating multi-minute build times and binary bloat.
+4. **Universal Sensor Fusion Engine**: A vehicle-agnostic state estimator combining 6-DOF/9-DOF Madgwick attitude estimation and 3rd-order baro-inertial complementary altitude/velocity estimation.
 
 ---
 
@@ -22,8 +21,8 @@ The codebase is engineered around three foundational pillars:
 |   +----------+----------+   +----------+----------+   +----------+----------+   |
 |              |                         |                         |              |
 |   +----------v-------------------------v-------------------------v----------+   |
-|   |                       VehicleBase Abstract Interface                    |   |
-|   |         - User Input Mapping    - Arming & Pre-Arm Safety Checks        |   |
+|   |                Zero-Allocation Pub/Sub Middleware (system/pubsub.hpp)   |   |
+|   |   Topic<VehicleState> | Topic<ControlDemands> | Topic<ActuatorOutputs>  |   |
 |   +------------------------------------+------------------------------------+   |
 +----------------------------------------|----------------------------------------+
                                          |
@@ -49,17 +48,17 @@ The codebase is engineered around three foundational pillars:
 |                      PLUG-AND-PLAY SENSOR SUBSYSTEM                             |
 |   +-------------------------------------------------------------------------+   |
 |   | SensorManager: Dynamic Bus Scanner & Health Supervisor                  |   |
-|   | - Auto-discovery on boot & runtime hot-swap recovery                    |   |
-|   | - Active/Backup failover logic                                          |   |
-|   | Drivers: MPU6050, ICM-20689, BMP280, QMC5883L, NMEA-GPS                 |   |
+|   | - DroneCAN Node: Auto-discovery on CAN bus (RawIMU, Baro, Mag, GPS)     |   |
+|   | - I2C/SPI Scanner: Auto-discovery on boot & runtime hot-swap recovery   |   |
+|   | Drivers: DroneCAN Node, MPU6050, ICM-20689, BMP280, QMC5883L, NMEA-GPS  |   |
 |   +------------------------------------+------------------------------------+   |
 +----------------------------------------|----------------------------------------+
                                          |
 +----------------------------------------v----------------------------------------+
 |                    HARDWARE ABSTRACTION LAYER (HAL)                             |
 |   +-------------------------------------------------------------------------+   |
-|   | I2CDevice | SPIDevice | UARTDevice | PWMOutput | High-Resolution Time   |   |
-|   | - STM32HAL: Direct STM32 Hardware Timers (TIM1/TIM4), I2C, SPI, UART    |   |
+|   | CANDevice | I2CDevice | SPIDevice | UARTDevice | PWMOutput | Time       |   |
+|   | - STM32HAL: Direct STM32 Hardware Timers (TIM1/TIM4), bxCAN/FDCAN, I2C  |   |
 |   | - PosixHAL: Host Linux Simulation, Unit Tests, and Mock Bus Injection   |   |
 |   +-------------------------------------------------------------------------+   |
 +---------------------------------------------------------------------------------+
@@ -70,14 +69,15 @@ The codebase is engineered around three foundational pillars:
 ## Directory Organization
 
 - `hal/`: Hardware Abstraction Layer interfaces and platform targets:
-  - `hal.hpp`: Base peripheral interfaces.
-  - `stm32/`: STM32 target implementations (STM32F4/F7/H7 timers, PWM channels, I2C/SPI/UART).
-  - `posix/`: Linux/POSIX simulation platform for unit testing and SIL.
+  - `hal.hpp`: Base peripheral interfaces (including `CANDevice` and `CANFrame`).
+  - `stm32/`: STM32 target implementations (TIM1/TIM4 PWM, bxCAN, I2C, SPI, UART).
+  - `posix/`: Linux/POSIX simulation platform with frame injection for unit tests.
 - `drivers/`: Modular plug-and-play sensor drivers:
+  - `can/`: **DroneCAN** protocol engine (`dronecan_types.hpp`), node dispatcher (`dronecan_node.hpp/cpp`), and CAN sensor drivers (`dronecan_sensors.hpp/cpp`).
   - `sensor_interface.hpp`: Unified abstract interfaces for IMUs, Barometers, Magnetometers, and GPS.
-  - `sensor_manager.hpp/cpp`: Bus scanner, dynamic registry, health supervisor, and hot-swap recovery.
+  - `sensor_manager.hpp/cpp`: CAN and I2C/SPI bus scanner, dynamic registry, health supervisor, and hot-swap recovery.
   - `imu/`: InvenSense MPU6050 and ICM-20689 drivers.
-  - `baro/`: Bosch BMP280 / BME280 high-precision barometric pressure driver.
+  - `baro/`: Bosch BMP280 / BME280 barometric pressure driver.
   - `mag/`: QMC5883L 3-axis digital compass driver.
   - `gps/`: NMEA / UBX GPS parser driver.
 - `fusion/`: Universal, vehicle-agnostic state estimation:
@@ -87,9 +87,9 @@ The codebase is engineered around three foundational pillars:
   - `state_types.hpp`: Unified `VehicleState` struct.
 - `math/`: Fast embedded 3D math (Vectors, Quaternions, Matrices, Low-Pass Filters, PID controllers).
 - `control/`: Arming logic, pre-arm safety validators, and actuator mixing interfaces.
-- `vehicles/`: Vehicle-specific flight/motion dynamics:
-  - `uav/`: Multicopter Quad-X cascaded rate/angle PIDs, altitude hold, and motor mixer.
-  - `ugv/`: Rover Ackermann and Skid-Steer steering PIDs, speed hold, and wheel mixers.
-  - `rov/`: Underwater Submarine 6-DOF thruster matrix and depth hold inspired by ArduSub.
-- `system/`: Real-time cyclic task scheduler and MAVLink-ready telemetry stream.
-- `tests/`: Automated unit tests covering sensor hot-swap, attitude convergence, and actuator outputs.
+- `vehicles/`: Vehicle-specific flight/motion dynamics (UAV Quad-X, UGV Rover, ROV Submarine).
+- `system/`:
+  - `pubsub.hpp`: **Zero-allocation Publish/Subscribe middleware**.
+  - `scheduler.hpp/cpp`: Multi-rate cyclic executor.
+  - `telemetry.hpp/cpp`: Serial/MAVLink telemetry reporting.
+- `tests/`: Automated test suite (`test_pnp_sensors`, `test_sensor_fusion`, `test_vehicle_controls`, `test_pubsub`, `test_dronecan`).
