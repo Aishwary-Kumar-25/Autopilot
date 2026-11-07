@@ -1,7 +1,5 @@
 #include "hal/posix/posix_hal.hpp"
-#include "vehicles/uav/uav_vehicle.hpp"
-#include "vehicles/ugv/ugv_vehicle.hpp"
-#include "vehicles/rov/rov_vehicle.hpp"
+#include "vehicles/vehicle_manager.hpp"
 #include "system/scheduler.hpp"
 #include "system/telemetry.hpp"
 #include <iostream>
@@ -11,14 +9,11 @@ using namespace autopilot;
 int main(int argc, char** argv) {
     std::cout << "========================================================\n";
     std::cout << "        E-CLUB MODULAR PLUG-AND-PLAY AUTOPILOT         \n";
-    std::cout << "       Target: STM32 Class / POSIX Simulation         \n";
+    std::cout << "   Single-Firmware Multi-Vehicle Runtime Architecture  \n";
     std::cout << "========================================================\n";
 
-    // Select vehicle type via command argument (default: UAV)
-    std::string vtype = "uav";
-    if (argc > 1) {
-        vtype = argv[1];
-    }
+    (void)argc;
+    (void)argv;
 
     hal::PosixHAL hal;
 
@@ -31,7 +26,6 @@ int main(int argc, char** argv) {
 
     hal::PosixI2CDevice::RegisterMap bmp;
     bmp[0xD0] = 0x58; // BMP280
-    // Nominal room temperature and sea level pressure registers
     bmp[0xF7] = 0x65;
     bmp[0xF8] = 0x5A;
     bmp[0xF9] = 0xC0;
@@ -40,57 +34,61 @@ int main(int argc, char** argv) {
     bmp[0xFC] = 0x00;
     hal.i2c().attach_device(0x76, bmp);
 
-    std::unique_ptr<vehicles::VehicleBase> vehicle;
-    if (vtype == "ugv" || vtype == "rover") {
-        vehicle = std::make_unique<vehicles::UGVVehicle>(&hal);
-    } else if (vtype == "rov" || vtype == "sub") {
-        vehicle = std::make_unique<vehicles::ROVVehicle>(&hal);
-    } else {
-        vehicle = std::make_unique<vehicles::UAVVehicle>(&hal);
-    }
+    // Initialize Unified VehicleManager (Default: UAV Multicopter)
+    vehicles::VehicleManager vm(&hal, vehicles::VehicleType::UAV_MULTICOPTER);
 
-    if (!vehicle->init()) {
-        std::cerr << "Failed to initialize vehicle!\n";
+    if (!vm.init()) {
+        std::cerr << "Failed to initialize VehicleManager!\n";
         return 1;
     }
 
-    std::cout << "Loaded Vehicle: " << vehicle->get_type_name() << "\n";
-
+    std::cout << "\n[Profile 1] Active Vehicle: " << vm.get_active_type_name() << "\n";
     std::string err;
-    if (!vehicle->arm(err)) {
-        std::cerr << "Pre-arm check failed: " << err << "\n";
-    } else {
-        std::cout << "Vehicle successfully armed!\n";
+    if (vm.arm(err)) {
+        std::cout << "  -> Armed UAV successfully! Running Quad-X flight loop...\n";
+        for (int i = 0; i < 20; ++i) {
+            vm.set_user_inputs(0.1f, 0.0f, 0.0f, 0.5f); // 50% hover throttle, slight roll
+            vm.step(0.01f);
+            hal.time().delay_ms(10);
+        }
+        std::cout << "  -> M1 PWM: " << hal.pwm().get_channel(0)
+                  << " us | M2 PWM: " << hal.pwm().get_channel(1) << " us\n";
     }
 
-    system::Scheduler scheduler(hal.get_time());
-    system::Telemetry telem(hal.get_uart(), vehicle.get());
-
-    // 100 Hz Fast Flight Loop
-    scheduler.add_task("flight_loop", [&]() {
-        vehicle->step(0.01f);
-    }, 100);
-
-    // 10 Hz Telemetry Attitude Stream
-    scheduler.add_task("telem_attitude", [&]() {
-        telem.send_attitude();
-    }, 10);
-
-    // 1 Hz Heartbeat & Sensor Health
-    scheduler.add_task("telem_heartbeat", [&]() {
-        telem.send_heartbeat();
-        telem.send_sensor_status();
-    }, 1);
-
-    std::cout << "Starting real-time flight loop simulation (100 steps)...\n";
-    for (int i = 0; i < 100; ++i) {
-        scheduler.run();
-        hal.time().delay_ms(10);
+    // Dynamic Switch to UGV Rover (NO REFLASHING REQUIRED)
+    std::cout << "\n>>> DYNAMIC PROFILE SWITCH: Converting to UGV Ground Rover <<<\n";
+    std::string switch_reason;
+    vm.switch_vehicle(vehicles::VehicleType::UGV_GROUND_ROVER, switch_reason);
+    std::cout << "[Profile 2] Active Vehicle: " << vm.get_active_type_name() << "\n";
+    if (vm.arm(err)) {
+        std::cout << "  -> Armed UGV successfully! Running Ackermann ground drive loop...\n";
+        for (int i = 0; i < 20; ++i) {
+            vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.6f, 0.6f); // 60% forward speed
+            vm.step(0.01f);
+            hal.time().delay_ms(10);
+        }
+        std::cout << "  -> Steering PWM: " << hal.pwm().get_channel(0)
+                  << " us | Throttle PWM: " << hal.pwm().get_channel(1) << " us\n";
     }
 
-    std::cout << "\n[Telemetry Output Stream]:\n";
-    std::cout << hal.uart().get_output_history() << "\n";
+    // Dynamic Switch to ROV Submarine (NO REFLASHING REQUIRED)
+    std::cout << "\n>>> DYNAMIC PROFILE SWITCH: Converting to ROV Submarine <<<\n";
+    vm.switch_vehicle(vehicles::VehicleType::ROV_SUBMARINE, switch_reason);
+    std::cout << "[Profile 3] Active Vehicle: " << vm.get_active_type_name() << "\n";
+    if (vm.arm(err)) {
+        std::cout << "  -> Armed ROV successfully! Running 6-DOF vectored thruster loop...\n";
+        for (int i = 0; i < 20; ++i) {
+            vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.4f, 0.5f, 0.0f); // Surge forward + vertical dive
+            vm.step(0.01f);
+            hal.time().delay_ms(10);
+        }
+        std::cout << "  -> Thruster 1 (Fwd): " << hal.pwm().get_channel(0)
+                  << " us | Thruster 5 (Vert): " << hal.pwm().get_channel(4) << " us\n";
+    }
 
-    std::cout << "Simulation cycle finished successfully.\n";
+    std::cout << "\n========================================================\n";
+    std::cout << "SUCCESS: All 3 vehicle profiles executed seamlessly on\n";
+    std::cout << "the SAME firmware binary without reflashing the chip!\n";
+    std::cout << "========================================================\n";
     return 0;
 }

@@ -46,6 +46,7 @@ set(CORE_SOURCES
     vehicles/uav/uav_vehicle.cpp
     vehicles/ugv/ugv_vehicle.cpp
     vehicles/rov/rov_vehicle.cpp
+    vehicles/vehicle_manager.cpp
     system/scheduler.cpp
     system/telemetry.cpp
     system/pubsub.hpp
