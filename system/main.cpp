@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Profile 1: UAV Multicopter
     std::cout << "\n[Profile 1] Active Vehicle: " << vm.get_active_type_name() << "\n";
     std::string err;
     if (vm.arm(err)) {
@@ -71,12 +72,12 @@ int main(int argc, char** argv) {
                   << " us | Throttle PWM: " << hal.pwm().get_channel(1) << " us\n";
     }
 
-    // Dynamic Switch to ROV Submarine (NO REFLASHING REQUIRED)
+    // Dynamic Switch to ROV Submarine (Standard 6-Thruster BlueROV2)
     std::cout << "\n>>> DYNAMIC PROFILE SWITCH: Converting to ROV Submarine <<<\n";
     vm.switch_vehicle(vehicles::VehicleType::ROV_SUBMARINE, switch_reason);
     std::cout << "[Profile 3] Active Vehicle: " << vm.get_active_type_name() << "\n";
     if (vm.arm(err)) {
-        std::cout << "  -> Armed ROV successfully! Running 6-DOF vectored thruster loop...\n";
+        std::cout << "  -> Armed ROV successfully! Running standard 6-DOF vectored thruster loop...\n";
         for (int i = 0; i < 20; ++i) {
             vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.4f, 0.5f, 0.0f); // Surge forward + vertical dive
             vm.step(0.01f);
@@ -86,9 +87,45 @@ int main(int argc, char** argv) {
                   << " us | Thruster 5 (Vert): " << hal.pwm().get_channel(4) << " us\n";
     }
 
+    // RUNTIME INTERFACE: Choose Number of Thrusters!
+    std::cout << "\n>>> RUNTIME INTERFACE: Selecting Number of Thrusters <<<\n";
+    std::cout << "User selection: Switch ROV to 8-Thruster Decoupled 6-DOF AUV configuration\n";
+    vm.disarm();
+    vm.configure_rov_thrusters(8);
+    std::cout << "  -> Reconfigured Active Vehicle: " << vm.get_active_type_name() << "\n";
+    std::cout << "  -> Active Thruster Channels: " << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+    if (vm.arm(err)) {
+        std::cout << "  -> Armed 8-Thruster AUV! Running pitch-up + forward surge maneuver...\n";
+        vm.set_user_inputs(0.0f, 0.4f, 0.0f, 0.0f, 0.5f, 0.0f); // Pitch up + surge forward
+        for (int i = 0; i < 20; ++i) {
+            vm.step(0.01f);
+            hal.time().delay_ms(10);
+        }
+        std::cout << "  -> Horizontal: T1=" << hal.pwm().get_channel(0) << "us, T2=" << hal.pwm().get_channel(1)
+                  << "us, T3=" << hal.pwm().get_channel(2) << "us, T4=" << hal.pwm().get_channel(3) << "us\n";
+        std::cout << "  -> Bow Vert:   T5=" << hal.pwm().get_channel(4) << "us, T6=" << hal.pwm().get_channel(5) << "us (>1500us UP)\n";
+        std::cout << "  -> Stern Vert: T7=" << hal.pwm().get_channel(6) << "us, T8=" << hal.pwm().get_channel(7) << "us (<1500us DOWN)\n";
+    }
+
+    std::cout << "\nUser selection: Switch ROV to 3-Thruster Budget / Educational configuration\n";
+    vm.disarm();
+    vm.configure_rov_thrusters(3);
+    std::cout << "  -> Reconfigured Active Vehicle: " << vm.get_active_type_name() << "\n";
+    std::cout << "  -> Active Thruster Channels: " << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+    if (vm.arm(err)) {
+        vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f, 0.5f, 0.0f); // Forward surge + climb heave
+        for (int i = 0; i < 20; ++i) {
+            vm.step(0.01f);
+            hal.time().delay_ms(10);
+        }
+        std::cout << "  -> Horiz Port (T1): " << hal.pwm().get_channel(0)
+                  << "us | Horiz Stbd (T2): " << hal.pwm().get_channel(1)
+                  << "us | Vert Center (T3): " << hal.pwm().get_channel(2) << "us\n";
+    }
+
     std::cout << "\n========================================================\n";
-    std::cout << "SUCCESS: All 3 vehicle profiles executed seamlessly on\n";
-    std::cout << "the SAME firmware binary without reflashing the chip!\n";
+    std::cout << "SUCCESS: Generalized Actuator Matrix Mixer seamlessly\n";
+    std::cout << "handles 3, 4, 6, 8, up to 16 thrusters on a single binary!\n";
     std::cout << "========================================================\n";
     return 0;
 }

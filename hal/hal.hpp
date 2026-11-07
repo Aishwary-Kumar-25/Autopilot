@@ -98,7 +98,7 @@ public:
  */
 class PWMOutput {
 public:
-    static constexpr uint8_t MAX_CHANNELS = 8;
+    static constexpr uint8_t MAX_CHANNELS = 16;
 
     virtual ~PWMOutput() = default;
 

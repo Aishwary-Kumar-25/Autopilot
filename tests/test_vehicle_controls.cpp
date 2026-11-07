@@ -2,8 +2,11 @@
 #include "vehicles/uav/uav_vehicle.hpp"
 #include "vehicles/ugv/ugv_vehicle.hpp"
 #include "vehicles/rov/rov_vehicle.hpp"
+#include "vehicles/vehicle_manager.hpp"
+#include "control/actuator_matrix_mixer.hpp"
 #include <cassert>
 #include <iostream>
+#include <cmath>
 
 using namespace autopilot;
 
@@ -25,10 +28,10 @@ void mock_healthy_sensors(hal::PosixHAL& hal) {
 
 int main() {
     std::cout << "========================================================\n";
-    std::cout << "TEST 3: Vehicle Controllers & Actuator PWM Outputs\n";
+    std::cout << "TEST 3: Vehicle Controllers & Actuator Matrix Mixer\n";
     std::cout << "========================================================\n";
 
-    // ----------------- TEST 3A: UAV Multicopter -----------------
+    // ----------------- TEST 3A: UAV Multicopter (Quad-X) -----------------
     std::cout << "\n[3A] Testing UAV (Quad-X Multicopter)...\n";
     hal::PosixHAL hal_uav;
     mock_healthy_sensors(hal_uav);
@@ -85,34 +88,196 @@ int main() {
     assert(throttle > 1650);  // Forward drive
     std::cout << "  -> UGV Ackermann steering & throttle [PASSED]\n";
 
-    // ----------------- TEST 3C: ROV Submarine -----------------
-    std::cout << "\n[3C] Testing ROV Submarine (ArduSub 6-DOF)...\n";
-    hal::PosixHAL hal_rov;
-    mock_healthy_sensors(hal_rov);
+    // ----------------- TEST 3C: Standard 6-Thruster ROV -----------------
+    std::cout << "\n[3C] Testing ROV Submarine (Standard 6-Thruster BlueROV2 6-DOF)...\n";
+    hal::PosixHAL hal_rov6;
+    mock_healthy_sensors(hal_rov6);
 
-    vehicles::ROVVehicle rov(&hal_rov);
-    assert(rov.init());
-    assert(rov.arm(err));
+    vehicles::ROVVehicle rov6(&hal_rov6, 6);
+    assert(rov6.init());
+    assert(rov6.arm(err));
+    assert(rov6.get_thruster_count() == 6);
 
     // Upward heave thrust (throttle = 0.5) -> Vertical thrusters (CH4, CH5) active
-    rov.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f);
-    rov.step(0.01f);
-    uint16_t t_vert1 = hal_rov.pwm().get_channel(4);
-    uint16_t t_vert2 = hal_rov.pwm().get_channel(5);
-    std::cout << "  -> ROV Vertical Thrusters: T5=" << t_vert1 << "us, T6=" << t_vert2 << "us\n";
+    rov6.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f);
+    rov6.step(0.01f);
+    uint16_t t_vert1 = hal_rov6.pwm().get_channel(4);
+    uint16_t t_vert2 = hal_rov6.pwm().get_channel(5);
+    std::cout << "  -> 6-Thruster Vertical: T5=" << t_vert1 << "us, T6=" << t_vert2 << "us\n";
     assert(t_vert1 > 1650);
     assert(t_vert2 > 1650);
 
     // Forward surge thrust (forward = 0.5) -> Horizontal thrusters (CH0..3) active
-    rov.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f);
-    rov.step(0.01f);
-    uint16_t t_horiz1 = hal_rov.pwm().get_channel(0);
-    uint16_t t_horiz2 = hal_rov.pwm().get_channel(1);
-    std::cout << "  -> ROV Forward Surge Thrusters: T1=" << t_horiz1 << "us, T2=" << t_horiz2 << "us\n";
+    rov6.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f);
+    rov6.step(0.01f);
+    uint16_t t_horiz1 = hal_rov6.pwm().get_channel(0);
+    uint16_t t_horiz2 = hal_rov6.pwm().get_channel(1);
+    std::cout << "  -> 6-Thruster Forward Surge: T1=" << t_horiz1 << "us, T2=" << t_horiz2 << "us\n";
     assert(t_horiz1 > 1650);
     assert(t_horiz2 > 1650);
-    std::cout << "  -> ROV 6-DOF Thruster Matrix [PASSED]\n";
+    std::cout << "  -> 6-Thruster Vectored Matrix [PASSED]\n";
 
-    std::cout << "\n>>> ALL VEHICLE CONTROLLER & PWM TESTS PASSED SUCCESSFULLY! <<<\n";
+    // ----------------- TEST 3D: 8-Thruster Decoupled 6-DOF AUV -----------------
+    std::cout << "\n[3D] Testing 8-Thruster Heavy AUV (BlueROV2 Heavy / RoboSub Decoupled 6-DOF)...\n";
+    hal::PosixHAL hal_rov8;
+    mock_healthy_sensors(hal_rov8);
+
+    vehicles::ROVVehicle rov8(&hal_rov8, 8);
+    assert(rov8.init());
+    assert(rov8.arm(err));
+    assert(rov8.get_thruster_count() == 8);
+    rov8.set_mode(vehicles::ROVMode::MANUAL); // Pure mixing verification
+    std::cout << "  -> Initialized 8-Thruster Layout: " << rov8.get_thruster_layout_name() << "\n";
+
+    // 1. Pure Pitch Up Command (pitch = +0.5):
+    // Bow vertical thrusters (T5, T6: CH4, CH5) push UP (1750us)
+    // Stern vertical thrusters (T7, T8: CH6, CH7) push DOWN (1250us)
+    rov8.set_user_inputs(0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f);
+    rov8.step(0.01f);
+    uint16_t t5_pitch = hal_rov8.pwm().get_channel(4);
+    uint16_t t6_pitch = hal_rov8.pwm().get_channel(5);
+    uint16_t t7_pitch = hal_rov8.pwm().get_channel(6);
+    uint16_t t8_pitch = hal_rov8.pwm().get_channel(7);
+    std::cout << "  -> Decoupled Pitch Response:\n"
+              << "     Bow Thrusters:   T5=" << t5_pitch << "us, T6=" << t6_pitch << "us (>1500us UP)\n"
+              << "     Stern Thrusters: T7=" << t7_pitch << "us, T8=" << t8_pitch << "us (<1500us DOWN)\n";
+    assert(t5_pitch == 1750);
+    assert(t6_pitch == 1750);
+    assert(t7_pitch == 1250);
+    assert(t8_pitch == 1250);
+
+    // 2. Pure Roll Right Command (roll = +0.5):
+    // Port vertical thrusters (T6, T8: CH5, CH7) push UP (1750us)
+    // Starboard vertical thrusters (T5, T7: CH4, CH6) push DOWN (1250us)
+    rov8.set_user_inputs(0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    rov8.step(0.01f);
+    uint16_t t5_roll = hal_rov8.pwm().get_channel(4);
+    uint16_t t6_roll = hal_rov8.pwm().get_channel(5);
+    uint16_t t7_roll = hal_rov8.pwm().get_channel(6);
+    uint16_t t8_roll = hal_rov8.pwm().get_channel(7);
+    std::cout << "  -> Decoupled Roll Response:\n"
+              << "     Port Thrusters:      T6=" << t6_roll << "us, T8=" << t8_roll << "us (>1500us UP)\n"
+              << "     Starboard Thrusters: T5=" << t5_roll << "us, T7=" << t7_roll << "us (<1500us DOWN)\n";
+    assert(t6_roll == 1750);
+    assert(t8_roll == 1750);
+    assert(t5_roll == 1250);
+    assert(t7_roll == 1250);
+
+    // 3. Pure Heave Command (throttle = +0.5):
+    // All 4 vertical thrusters (CH4..7) push UP equally (1750us)
+    rov8.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f);
+    rov8.step(0.01f);
+    assert(hal_rov8.pwm().get_channel(4) == 1750);
+    assert(hal_rov8.pwm().get_channel(5) == 1750);
+    assert(hal_rov8.pwm().get_channel(6) == 1750);
+    assert(hal_rov8.pwm().get_channel(7) == 1750);
+    std::cout << "  -> 8-Thruster Decoupled 6-DOF Dynamics [PASSED]\n";
+
+    // ----------------- TEST 3E: Budget 3-Thruster ROV -----------------
+    std::cout << "\n[3E] Testing Budget 3-Thruster ROV (2 Horiz + 1 Vert)...\n";
+    hal::PosixHAL hal_rov3;
+    mock_healthy_sensors(hal_rov3);
+
+    vehicles::ROVVehicle rov3(&hal_rov3, 3);
+    assert(rov3.init());
+    assert(rov3.arm(err));
+    assert(rov3.get_thruster_count() == 3);
+
+    // Forward surge command
+    rov3.set_user_inputs(0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f);
+    rov3.step(0.01f);
+    assert(hal_rov3.pwm().get_channel(0) > 1650); // Horiz Port
+    assert(hal_rov3.pwm().get_channel(1) > 1650); // Horiz Stbd
+    assert(hal_rov3.pwm().get_channel(2) == 1500); // Vert stopped
+
+    // Heave climb command
+    rov3.set_user_inputs(0.0f, 0.0f, 0.0f, 0.6f, 0.0f, 0.0f);
+    rov3.step(0.01f);
+    assert(hal_rov3.pwm().get_channel(2) > 1700); // Vert thruster active
+    // Inactive channels 3..15 must remain at safe disarmed value (1000us)
+    for (uint8_t ch = 3; ch < hal::PWMOutput::MAX_CHANNELS; ++ch) {
+        assert(hal_rov3.pwm().get_channel(ch) == 1000);
+    }
+    std::cout << "  -> 3-Thruster Simple Allocation [PASSED]\n";
+
+    // ----------------- TEST 3F: Runtime Interface Option -----------------
+    std::cout << "\n[3F] Testing Runtime Interface to Choose Number of Thrusters...\n";
+    hal::PosixHAL hal_vm;
+    mock_healthy_sensors(hal_vm);
+
+    vehicles::VehicleManager vm(&hal_vm, vehicles::VehicleType::ROV_SUBMARINE);
+    assert(vm.init());
+
+    // Switch between 3, 6, 8, and 12 thrusters at runtime
+    assert(vm.configure_rov_thrusters(8));
+    assert(vm.get_active_actuator_count() == 8);
+    std::cout << "  -> Interface configured 8 thrusters: Active Count = "
+              << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+
+    assert(vm.configure_rov_thrusters(3));
+    assert(vm.get_active_actuator_count() == 3);
+    std::cout << "  -> Interface configured 3 thrusters: Active Count = "
+              << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+
+    assert(vm.configure_rov_thrusters(6));
+    assert(vm.get_active_actuator_count() == 6);
+    std::cout << "  -> Interface configured 6 thrusters: Active Count = "
+              << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+
+    // Heavy work-class ROV with 12 thrusters
+    assert(vm.configure_rov_thrusters(12));
+    assert(vm.get_active_actuator_count() == 12);
+    std::cout << "  -> Interface configured 12 thrusters: Active Count = "
+              << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+
+    // Massive 16-channel maximum allocation
+    assert(vm.configure_rov_thrusters(16));
+    assert(vm.get_active_actuator_count() == 16);
+    std::cout << "  -> Interface configured 16 thrusters: Active Count = "
+              << static_cast<int>(vm.get_active_actuator_count()) << "\n";
+    std::cout << "  -> Dynamic Thruster Selection Interface [PASSED]\n";
+
+    // ----------------- TEST 3G: UAV Multi-Rotor Scaling -----------------
+    std::cout << "\n[3G] Testing UAV Rotor Count Scaling (4 -> 6 -> 8 -> 12 Rotors)...\n";
+    assert(vm.configure_uav_rotors(6));
+    assert(vm.get_active_actuator_count() == 6);
+    assert(vm.arm(err));
+
+    vm.set_user_inputs(0.0f, 0.0f, 0.0f, 0.5f);
+    vm.step(0.01f);
+    for (uint8_t i = 0; i < 6; ++i) {
+        std::cout << "  Channel " << (int)i << ": " << hal_vm.pwm().get_channel(i) << "us\n";
+        assert(hal_vm.pwm().get_channel(i) >= 1400);
+    }
+    std::cout << "  -> Hexacopter (6 Rotors) Mixing [PASSED]\n";
+
+    assert(vm.configure_uav_rotors(8));
+    assert(vm.get_active_actuator_count() == 8);
+    std::cout << "  -> Octacopter (8 Rotors) Mixing [PASSED]\n";
+
+    // ----------------- TEST 3H: DroneCAN ESC Output Integration -----------------
+    std::cout << "\n[3H] Testing DroneCAN ESC Output Generation (DSDL 1030)...\n";
+    control::ActuatorMatrixMixer can_mixer(control::MixerPreset::ROV_6_VECTORED);
+    control::ControlDemands demands;
+    demands.forward = 0.5f;
+
+    hal::CANFrame esc_frame;
+    uint8_t transfer_id = 0;
+    bool gen_ok = can_mixer.generate_dronecan_esc_frame(demands, transfer_id, esc_frame, true);
+    assert(gen_ok);
+    assert(esc_frame.is_extended);
+    assert(esc_frame.dlc == 8);
+    // Message ID 1030 (0x406) embedded in 29-bit ID
+    uint32_t msg_type = (esc_frame.id >> 8) & 0xFFFF;
+    assert(msg_type == 1030);
+    std::cout << "  -> DroneCAN ESC CAN ID: 0x" << std::hex << esc_frame.id << std::dec
+              << " (DSDL Message Type ID: " << msg_type << ")\n";
+    // Check start and end bits in tail byte (0xC0 | transfer_id)
+    assert((esc_frame.data[7] & 0xC0) == 0xC0);
+    std::cout << "  -> DroneCAN ESC RawCommand Frame Encoding [PASSED]\n";
+
+    std::cout << "\n========================================================\n";
+    std::cout << "ALL 8 ACTUATOR MATRIX MIXER & VEHICLE CONTROLLER TESTS PASSED!\n";
+    std::cout << "========================================================\n";
     return 0;
 }

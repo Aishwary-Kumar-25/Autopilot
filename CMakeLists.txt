@@ -42,6 +42,7 @@ set(CORE_SOURCES
     fusion/complementary.cpp
     fusion/ahrs_interface.cpp
     control/arming_handler.cpp
+    control/actuator_matrix_mixer.cpp
     vehicles/vehicle_base.cpp
     vehicles/uav/uav_vehicle.cpp
     vehicles/ugv/ugv_vehicle.cpp

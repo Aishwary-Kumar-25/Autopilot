@@ -46,7 +46,7 @@ public:
 
 private:
     STM32PWMChannelConfig _configs[MAX_CHANNELS];
-    uint16_t _pulses[MAX_CHANNELS]{1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+    uint16_t _pulses[MAX_CHANNELS]{};
     uint16_t _failsafe_pulse{1000};
     uint32_t _frequency{50};
     bool _enabled{false};

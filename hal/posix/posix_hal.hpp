@@ -78,6 +78,7 @@ private:
 
 class PosixPWMOutput : public PWMOutput {
 public:
+    PosixPWMOutput();
     bool init(uint32_t frequency_hz) override;
     void set_channel(uint8_t channel, uint16_t pulse_us) override;
     uint16_t get_channel(uint8_t channel) const override;
@@ -85,7 +86,7 @@ public:
     bool is_enabled() const override;
 
 private:
-    std::array<uint16_t, MAX_CHANNELS> _channels{1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+    std::array<uint16_t, MAX_CHANNELS> _channels{};
     bool _enabled{false};
     uint32_t _frequency{50};
 };

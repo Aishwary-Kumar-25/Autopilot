@@ -31,6 +31,9 @@ void VehicleManager::instantiate_vehicle(VehicleType type) {
             _active_mixer = std::make_unique<UAVQuadMixer>();
             break;
     }
+    if (_active_vehicle) {
+        _active_vehicle->init();
+    }
 }
 
 bool VehicleManager::init() {
@@ -78,6 +81,41 @@ void VehicleManager::set_user_inputs(float roll, float pitch, float yaw, float t
     if (_active_vehicle) {
         _active_vehicle->set_user_inputs(roll, pitch, yaw, throttle, forward, lateral);
     }
+}
+
+bool VehicleManager::configure_rov_thrusters(uint8_t count, ROVLayout layout) {
+    if (_active_type != VehicleType::ROV_SUBMARINE) {
+        std::string reason;
+        if (!switch_vehicle(VehicleType::ROV_SUBMARINE, reason)) {
+            return false;
+        }
+    }
+    auto* rov = dynamic_cast<ROVVehicle*>(_active_vehicle.get());
+    if (rov) {
+        return rov->set_thruster_count(count, layout);
+    }
+    return false;
+}
+
+bool VehicleManager::configure_uav_rotors(uint8_t count) {
+    if (_active_type != VehicleType::UAV_MULTICOPTER) {
+        std::string reason;
+        if (!switch_vehicle(VehicleType::UAV_MULTICOPTER, reason)) {
+            return false;
+        }
+    }
+    auto* uav = dynamic_cast<UAVVehicle*>(_active_vehicle.get());
+    if (uav) {
+        return uav->set_rotor_count(count);
+    }
+    return false;
+}
+
+uint8_t VehicleManager::get_active_actuator_count() const {
+    if (_active_vehicle && _active_vehicle->get_mixer()) {
+        return _active_vehicle->get_mixer()->get_num_channels();
+    }
+    return 0;
 }
 
 bool VehicleManager::arm(std::string& failure_reason) {

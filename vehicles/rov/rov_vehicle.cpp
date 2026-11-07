@@ -3,10 +3,77 @@
 namespace autopilot {
 namespace vehicles {
 
-ROVVehicle::ROVVehicle(hal::HAL* hal)
+ROVVehicle::ROVVehicle(hal::HAL* hal, uint8_t initial_thrusters)
     : VehicleBase(hal, VehicleType::ROV_SUBMARINE) {
-    _mixer = std::make_unique<ROVThrusterMixer>();
+    auto mixer = std::make_unique<ROVThrusterMixer>(initial_thrusters);
+    _matrix_mixer = mixer.get();
+    _mixer = std::move(mixer);
+    _thruster_count = initial_thrusters;
+    _layout = (initial_thrusters == 3) ? ROVLayout::SIMPLE_3 :
+              (initial_thrusters == 4) ? ROVLayout::BASIC_4 :
+              (initial_thrusters == 8) ? ROVLayout::HEAVY_8 :
+              (initial_thrusters == 6) ? ROVLayout::VECTORED_6 : ROVLayout::CUSTOM_N;
     setup_pids();
+}
+
+const char* ROVVehicle::get_type_name() const {
+    switch (_layout) {
+        case ROVLayout::SIMPLE_3:   return "ROV Submarine (3-Thruster Simple)";
+        case ROVLayout::BASIC_4:    return "ROV Submarine (4-Thruster Basic)";
+        case ROVLayout::VECTORED_6: return "ROV Submarine (ArduSub BlueROV2 6-DOF)";
+        case ROVLayout::HEAVY_8:    return "AUV / Heavy ROV (8-Thruster Decoupled 6-DOF)";
+        case ROVLayout::CUSTOM_N:
+        default:                    return "ROV Submarine (Custom N-Thrusters)";
+    }
+}
+
+const char* ROVVehicle::get_thruster_layout_name() const {
+    if (_matrix_mixer) {
+        return _matrix_mixer->get_preset_name();
+    }
+    return "Unknown Layout";
+}
+
+bool ROVVehicle::set_thruster_count(uint8_t count, ROVLayout layout) {
+    if (count < 2 || count > hal::PWMOutput::MAX_CHANNELS || !_matrix_mixer) {
+        return false;
+    }
+    _thruster_count = count;
+    _layout = layout;
+
+    if (layout == ROVLayout::AUTO) {
+        if (count == 3) _layout = ROVLayout::SIMPLE_3;
+        else if (count == 4) _layout = ROVLayout::BASIC_4;
+        else if (count == 6) _layout = ROVLayout::VECTORED_6;
+        else if (count == 8) _layout = ROVLayout::HEAVY_8;
+        else _layout = ROVLayout::CUSTOM_N;
+        return _matrix_mixer->configure_rov(count);
+    }
+
+    switch (layout) {
+        case ROVLayout::SIMPLE_3:
+            _thruster_count = 3;
+            return _matrix_mixer->load_preset(control::MixerPreset::ROV_3_SIMPLE);
+        case ROVLayout::BASIC_4:
+            _thruster_count = 4;
+            return _matrix_mixer->load_preset(control::MixerPreset::ROV_4_BASIC);
+        case ROVLayout::VECTORED_6:
+            _thruster_count = 6;
+            return _matrix_mixer->load_preset(control::MixerPreset::ROV_6_VECTORED);
+        case ROVLayout::HEAVY_8:
+            _thruster_count = 8;
+            return _matrix_mixer->load_preset(control::MixerPreset::ROV_8_HEAVY);
+        case ROVLayout::CUSTOM_N:
+        default:
+            return _matrix_mixer->configure_rov(count);
+    }
+}
+
+bool ROVVehicle::set_custom_thruster(uint8_t channel, float roll, float pitch, float yaw, float heave, float surge, float sway) {
+    if (!_matrix_mixer) return false;
+    control::ActuatorConfig cfg{roll, pitch, yaw, heave, surge, sway, true, false, 1000, 2000, 1500, true};
+    _layout = ROVLayout::CUSTOM_N;
+    return _matrix_mixer->set_actuator_config(channel, cfg);
 }
 
 void ROVVehicle::setup_pids() {
@@ -38,11 +105,17 @@ void ROVVehicle::update_controller(float dt) {
 
     _demands = _user_input;
 
-    // Stabilize attitude (keep ROV level in water)
+    // Stabilize attitude (keep ROV level in water when user input is neutral)
     if (_mode == ROVMode::STABILIZE || _mode == ROVMode::DEPTH_HOLD) {
-        // Roll & Pitch self leveling toward 0
-        _demands.roll = _roll_pid.update(0.0f, state.euler_rad.x, dt);
-        _demands.pitch = _pitch_pid.update(0.0f, state.euler_rad.y, dt);
+        // Roll & Pitch self leveling toward 0 or user target angle
+        if (_thruster_count >= 4) {
+            float target_roll = _user_input.roll * 0.5f;
+            _demands.roll = _user_input.roll + _roll_pid.update(target_roll, state.euler_rad.x, dt);
+        }
+        if (_thruster_count >= 6) {
+            float target_pitch = _user_input.pitch * 0.5f;
+            _demands.pitch = _user_input.pitch + _pitch_pid.update(target_pitch, state.euler_rad.y, dt);
+        }
     }
 
     // Depth Hold (ArduSub style)

@@ -29,8 +29,12 @@ The **E-Club Autopilot** is a modular, high-reliability flight stack and robotic
 +----------------------------------------v----------------------------------------+
 |                               ACTUATOR MIXER LAYER                              |
 |   +-------------------------------------------------------------------------+   |
-|   | UAVQuadMixer (4 ESCs) | UGVMixer (Steer+Throttle) | ROVThrusterMixer    |   |
-|   | Normalized Demands    --> Physical PWM Microsecond Commands (1000-2000us)|   |
+|   | ActuatorMatrixMixer (Generalized Control Allocation Matrix B * tau)      |   |
+|   | - 2 to 16 Actuators: 3 (Budget), 4 (Basic/Quad), 6 (Vectored/Hexa),     |   |
+|   |   8 (Decoupled 6-DOF AUV/Octa), up to 16 channels                       |   |
+|   | - Dynamic Interface: Choose number of thrusters/rotors at runtime       |   |
+|   | - Desaturation & Dynamic Scaling (prevents rollover/loss of authority) |   |
+|   | - Outputs: 16-ch PWM (1000-2000us) + DroneCAN ESC RawCommand (DSDL 1030)|   |
 |   +------------------------------------+------------------------------------+   |
 +----------------------------------------|----------------------------------------+
                                          |
@@ -86,7 +90,7 @@ The **E-Club Autopilot** is a modular, high-reliability flight stack and robotic
   - `complementary.hpp/cpp`: 3rd-order baro-inertial altitude and climb-rate estimator.
   - `state_types.hpp`: Unified `VehicleState` struct.
 - `math/`: Fast embedded 3D math (Vectors, Quaternions, Matrices, Low-Pass Filters, PID controllers).
-- `control/`: Arming logic, pre-arm safety validators, and actuator mixing interfaces.
+- `control/`: Arming logic, pre-arm safety validators, and `ActuatorMatrixMixer` (generalized 2-16 channel control allocation, dynamic thruster selection, and DroneCAN ESC support).
 - `vehicles/`: Vehicle-specific flight/motion dynamics (UAV Quad-X, UGV Rover, ROV Submarine).
 - `system/`:
   - `pubsub.hpp`: **Zero-allocation Publish/Subscribe middleware**.

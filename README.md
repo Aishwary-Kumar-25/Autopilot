@@ -24,10 +24,13 @@ A high-reliability, modular autopilot designed from scratch for **UAVs (Multirot
    - 3rd-order **Baro-Inertial Complementary Filter** computes lag-free vertical velocity ($v_z$) and altitude ($z$).
    - Outputs a unified `VehicleState` struct (quaternion, Euler angles, body angular rates, NED accelerations, NED velocities, and positions).
 
-5. **Multi-Vehicle Abstraction & Specialized Controls**:
-   - **UAV (Multicopter - Quad-X)**: Cascaded Angle P -> Rate PID loops, altitude hold, and Quad-X motor mixer (Channels 0–3).
-   - **UGV (Ground Rover)**: Heading hold and speed hold controllers with selectable Ackermann steering (Steering Servo + ESC) or Skid-Steer differential mixing (Channels 0–1).
-   - **ROV (Underwater Submarine - ArduSub-Inspired)**: 6-DOF vectored thruster matrix mixer (Channels 0–5) and depth-hold controller using common sensor fusion depth estimation.
+5. **Multi-Vehicle Abstraction & Generalized Actuator Matrix Mixer**:
+   - **ActuatorMatrixMixer (2 to 16 Channels)**: Dynamic control allocation matrix ($u = B \cdot \tau$) replacing hardcoded mixers. Features dynamic desaturation and scaling to preserve attitude authority without clipping.
+   - **Interface Option for Thruster Selection**: Select thruster/motor count dynamically at runtime:
+     - **ROV Submarine / AUV**: Supports 3 thrusters (simple budget 2-horiz/1-vert), 4 thrusters (basic 2-horiz/2-vert), 6 thrusters (standard vectored BlueROV2 6-DOF), 8 thrusters (decoupled 6-DOF BlueROV2 Heavy & RoboSub AUV with independent pitch and roll moments), and custom configurations up to 16 thrusters.
+     - **UAV Multicopter**: Scales dynamically from Tricopters (3), Quad-X (4), Hexa-X (6), Octa-X (8), up to 16-rotor heavy-lift platforms.
+     - **DroneCAN ESC Integration**: Generates native `uavcan.equipment.esc.RawCommand` (DSDL 1030) packets for direct CAN bus motor control alongside standard 16-channel PWM.
+   - **UGV (Ground Rover)**: Heading hold and speed hold controllers with selectable Ackermann steering or Skid-Steer differential mixing.
 
 6. **STM32 Hardware Abstraction Layer (HAL)**:
    - Targets the standard class of high-performance 32-bit ARM Cortex-M processors (STM32F405, STM32F745/765, STM32H743/753).

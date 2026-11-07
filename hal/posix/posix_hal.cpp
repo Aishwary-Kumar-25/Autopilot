@@ -162,6 +162,10 @@ void PosixUARTDevice::clear_output_history() {
 
 // ---------------- PosixPWMOutput ----------------
 
+PosixPWMOutput::PosixPWMOutput() {
+    _channels.fill(1000);
+}
+
 bool PosixPWMOutput::init(uint32_t frequency_hz) {
     _frequency = frequency_hz;
     _channels.fill(1000);

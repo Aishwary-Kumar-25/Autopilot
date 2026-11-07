@@ -3,10 +3,31 @@
 namespace autopilot {
 namespace vehicles {
 
-UAVVehicle::UAVVehicle(hal::HAL* hal)
-    : VehicleBase(hal, VehicleType::UAV_MULTICOPTER) {
-    _mixer = std::make_unique<UAVQuadMixer>();
+UAVVehicle::UAVVehicle(hal::HAL* hal, uint8_t initial_rotors)
+    : VehicleBase(hal, VehicleType::UAV_MULTICOPTER),
+      _rotor_count(initial_rotors) {
+    auto mixer = std::make_unique<UAVQuadMixer>(initial_rotors);
+    _matrix_mixer = mixer.get();
+    _mixer = std::move(mixer);
     setup_pids();
+}
+
+const char* UAVVehicle::get_type_name() const {
+    switch (_rotor_count) {
+        case 3:  return "UAV Multicopter (Tricopter)";
+        case 4:  return "UAV Multicopter (Quad-X)";
+        case 6:  return "UAV Multicopter (Hexa-X)";
+        case 8:  return "UAV Multicopter (Octa-X)";
+        default: return "UAV Multicopter (Multi-Rotor)";
+    }
+}
+
+bool UAVVehicle::set_rotor_count(uint8_t count) {
+    if (count < 3 || count > hal::PWMOutput::MAX_CHANNELS || !_matrix_mixer) {
+        return false;
+    }
+    _rotor_count = count;
+    return _matrix_mixer->configure_uav(count);
 }
 
 void UAVVehicle::setup_pids() {
@@ -48,25 +69,24 @@ void UAVVehicle::update_controller(float dt) {
     constexpr float MAX_ANGLE_RAD = 30.0f * (static_cast<float>(M_PI) / 180.0f);
     float target_roll = _user_input.roll * MAX_ANGLE_RAD;
     float target_pitch = _user_input.pitch * MAX_ANGLE_RAD;
-    float target_yaw_rate = _user_input.yaw * 3.0f; // up to 3 rad/s
 
-    // Outer Loop: Angle -> Desired Rate
+    // Angle Error -> Desired Angular Rate
     float desired_roll_rate = _roll_angle_pid.update(target_roll, state.euler_rad.x, dt);
     float desired_pitch_rate = _pitch_angle_pid.update(target_pitch, state.euler_rad.y, dt);
+    float desired_yaw_rate = _user_input.yaw * 3.0f; // 3 rad/s max yaw rate
 
-    // Inner Loop: Rate -> Torque Demand
+    // Rate Error -> Normalized Actuator Demands
     _demands.roll = _roll_rate_pid.update(desired_roll_rate, state.angular_velocity.x, dt);
     _demands.pitch = _pitch_rate_pid.update(desired_pitch_rate, state.angular_velocity.y, dt);
-    _demands.yaw = _yaw_rate_pid.update(target_yaw_rate, state.angular_velocity.z, dt);
+    _demands.yaw = _yaw_rate_pid.update(desired_yaw_rate, state.angular_velocity.z, dt);
 
-    // 2. Throttle & Altitude
+    // 2. Throttle / Altitude Controller
     if (_mode == UAVFlightMode::ALT_HOLD && state.altitude_valid) {
-        float desired_vel_z = _altitude_pid.update(_target_altitude_m, state.altitude_m, dt);
-        float throttle_adj = _velocity_z_pid.update(desired_vel_z, state.vertical_velocity_m_s, dt);
-        float base_hover_throttle = 0.5f; // Estimated hover throttle
-        _demands.throttle = std::clamp(base_hover_throttle + throttle_adj, 0.1f, 0.9f);
+        float desired_climb_rate = _altitude_pid.update(_target_altitude_m, state.altitude_m, dt);
+        float throttle_delta = _velocity_z_pid.update(desired_climb_rate, state.vertical_velocity_m_s, dt);
+        _demands.throttle = std::clamp(0.5f + throttle_delta, 0.1f, 0.9f); // 0.5 = hover baseline
     } else {
-        _demands.throttle = _user_input.throttle;
+        _demands.throttle = std::clamp(_user_input.throttle, 0.0f, 1.0f);
     }
 }
 

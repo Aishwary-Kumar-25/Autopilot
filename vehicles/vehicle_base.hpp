@@ -41,6 +41,8 @@ public:
     drivers::SensorManager* get_sensors() { return _sensors.get(); }
     fusion::SensorFusion* get_fusion() { return _fusion.get(); }
     control::ArmingHandler* get_arming() { return &_arming; }
+    control::VehicleMixer* get_mixer() { return _mixer.get(); }
+    const control::VehicleMixer* get_mixer() const { return _mixer.get(); }
     const fusion::VehicleState& get_state() const { return _fusion->get_state(); }
 
     // User command inputs (Normalized [-1.0, 1.0])

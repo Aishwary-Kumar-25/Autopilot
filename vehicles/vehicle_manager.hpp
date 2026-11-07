@@ -55,6 +55,24 @@ public:
     // User input command routing
     void set_user_inputs(float roll, float pitch, float yaw, float throttle, float forward = 0.0f, float lateral = 0.0f);
 
+    /**
+     * @brief Interface option to dynamically choose number of thrusters for ROV (2 to 16).
+     * @param count Number of thrusters (3 = simple, 4 = basic, 6 = vectored BlueROV2, 8 = heavy AUV 6-DOF, up to 16).
+     * @param layout Optional layout preset (defaults to AUTO).
+     */
+    bool configure_rov_thrusters(uint8_t count, ROVLayout layout = ROVLayout::AUTO);
+
+    /**
+     * @brief Interface option to dynamically choose number of rotors for UAV (3 to 16).
+     * @param count Number of rotors (3 = Tricopter, 4 = Quad-X, 6 = Hexa-X, 8 = Octa-X, up to 16).
+     */
+    bool configure_uav_rotors(uint8_t count);
+
+    /**
+     * @brief Get active number of actuator channels in use.
+     */
+    uint8_t get_active_actuator_count() const;
+
     // Subsystem accessors
     hal::HAL* get_hal() { return _hal; }
     drivers::SensorManager* get_sensors() { return _sensors.get(); }
