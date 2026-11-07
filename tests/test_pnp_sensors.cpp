@@ -3,7 +3,7 @@
 #include "drivers/imu/mpu6050.hpp"
 #include "drivers/imu/icm20689.hpp"
 #include "drivers/baro/bmp280.hpp"
-#include <cassert>
+#include "tests/test_common.hpp"
 #include <iostream>
 
 using namespace autopilot;
@@ -70,17 +70,17 @@ int main() {
     drivers::SensorManager sm(&hal);
     sm.auto_discover_sensors();
 
-    assert(sm.has_healthy_imu());
-    assert(sm.get_active_imu() != nullptr);
+    CHECK(sm.has_healthy_imu());
+    CHECK(sm.get_active_imu() != nullptr);
     std::cout << "  -> Discovered IMU: " << sm.get_active_imu()->name() << " [PASSED]\n";
 
-    assert(sm.has_healthy_baro());
-    assert(sm.get_active_baro() != nullptr);
+    CHECK(sm.has_healthy_baro());
+    CHECK(sm.get_active_baro() != nullptr);
     std::cout << "  -> Discovered Barometer: " << sm.get_active_baro()->name() << " [PASSED]\n";
 
     // Update sensor readings
     sm.update();
-    assert(sm.get_active_imu()->is_healthy());
+    CHECK(sm.get_active_imu()->is_healthy());
 
     // 2. Simulate Sensor Failure: Sensor goes bad / burns out / disconnected
     std::cout << "\n[Step 2] Simulating sensor hardware burnout / detachment...\n";
@@ -92,7 +92,7 @@ int main() {
         sm.update();
     }
 
-    assert(!sm.has_healthy_imu());
+    CHECK(!sm.has_healthy_imu());
     std::cout << "  -> Sensor failure detected! Active IMU is now invalid [PASSED]\n";
 
     // 3. Simulate Hot-Swap Replacement: Plug in a brand new ICM-20689 sensor
@@ -103,9 +103,9 @@ int main() {
     hal.time().advance_time_ms(1200);
     sm.probe_and_recover_sensors();
 
-    assert(sm.has_healthy_imu());
+    CHECK(sm.has_healthy_imu());
     std::cout << "  -> Auto-recovered with replacement sensor: " << sm.get_active_imu()->name() << " [PASSED]\n";
 
     std::cout << "\n>>> ALL PLUG-AND-PLAY SENSOR TESTS PASSED SUCCESSFULLY! <<<\n";
-    return 0;
+    return test::finish("test_pnp_sensors");
 }

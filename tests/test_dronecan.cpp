@@ -1,123 +1,214 @@
+/**
+ * DroneCAN protocol tests. Golden values come from outside this codebase so the
+ * tests can't just agree with our own mistakes:
+ *  - scalar bit-order vectors: libcanard's test_scalar_encoding.cpp
+ *  - data type signatures: ArduPilot's dsdlc-generated headers
+ *  - message IDs: file names in github.com/DroneCAN/DSDL
+ */
 #include "hal/posix/posix_hal.hpp"
-#include "drivers/can/dronecan_types.hpp"
+#include "drivers/can/dronecan_codec.hpp"
 #include "drivers/can/dronecan_node.hpp"
 #include "drivers/sensor_manager.hpp"
-#include <cassert>
+#include "control/actuator_matrix_mixer.hpp"
+#include "tests/test_common.hpp"
+#include <cstring>
 #include <iostream>
-#include <cmath>
+#include <vector>
 
 using namespace autopilot;
 using namespace autopilot::drivers::dronecan;
 
-int main() {
-    std::cout << "========================================================\n";
-    std::cout << "TEST 5: DroneCAN Protocol & High-Reliability CAN Sensors\n";
-    std::cout << "========================================================\n";
-
-    // 1. Test 29-bit CAN ID construction and parsing
-    std::cout << "[Step 1] Testing DroneCAN 29-bit Identifier bitfields...\n";
-    uint32_t can_id = CANIDFields::construct_message_id(24, MSG_ID_STATIC_PRESSURE, 42);
-    auto parsed_id = CANIDFields::parse(can_id);
-    assert(parsed_id.priority == 24);
-    assert(parsed_id.data_type_id == MSG_ID_STATIC_PRESSURE);
-    assert(parsed_id.source_node_id == 42);
-    assert(!parsed_id.is_service);
-    std::cout << "  -> 29-bit CAN ID packing & parsing [PASSED]\n";
-
-    // 2. Test IEEE 754 float16 conversion accuracy
-    std::cout << "\n[Step 2] Testing IEEE 754 Float16 conversions...\n";
-    float test_vals[] = {0.0f, 1.0f, -1.0f, 9.80665f, 0.5f, 25.4f};
-    for (float v : test_vals) {
-        uint16_t h = float32_to_float16(v);
-        float recovered = float16_to_float32(h);
-        assert(std::abs(v - recovered) < 0.05f);
-    }
-    std::cout << "  -> Float16 compression accuracy [PASSED]\n";
-
-    // 3. Test DroneCAN Node reception and auto-discovery
-    std::cout << "\n[Step 3] Initializing POSIX CAN device & DroneCAN Node...\n";
-    hal::PosixHAL hal;
-    hal.time().set_manual_time_mode(true);
-
-    DroneCANNode dronecan_node(&hal.can(), hal.get_time(), 1);
-    assert(dronecan_node.init(1000000));
-
-    // Simulate Node 10 broadcasting NodeStatus (Uptime 50 sec, Health OK, Mode Operational)
-    std::cout << "  -> Injecting NodeStatus broadcast from remote Node 10...\n";
-    hal::CANFrame status_frame;
-    status_frame.is_extended = true;
-    status_frame.dlc = 8;
-    status_frame.id = CANIDFields::construct_message_id(30, MSG_ID_NODE_STATUS, 10);
-    uint32_t uptime = 50;
-    std::memcpy(status_frame.data, &uptime, 4);
-    status_frame.data[4] = 0x00; // Health OK (0), Mode Operational (0)
-    status_frame.data[5] = 0x00;
-    status_frame.data[6] = 0x00;
-    status_frame.data[7] = TailByte::construct(true, true, false, 0); // SOT=1, EOT=1
-    hal.can().inject_frame(status_frame);
-
-    dronecan_node.process_rx();
-    assert(dronecan_node.get_active_node_count() == 1);
-    std::cout << "  -> Discovered active DroneCAN Node 10 on CAN bus [PASSED]\n";
-
-    // 4. Inject StaticPressure CAN message (Data Type 1020) from Node 10
-    std::cout << "\n[Step 4] Injecting DroneCAN StaticPressure message (101325 Pa)...\n";
-    hal::CANFrame baro_frame;
-    baro_frame.is_extended = true;
-    baro_frame.dlc = 8;
-    baro_frame.id = CANIDFields::construct_message_id(20, MSG_ID_STATIC_PRESSURE, 10);
-    float pressure_val = 101325.0f;
-    std::memcpy(baro_frame.data, &pressure_val, 4);
-    uint16_t variance = float32_to_float16(0.1f);
-    std::memcpy(baro_frame.data + 4, &variance, 2);
-    baro_frame.data[6] = 0x00;
-    baro_frame.data[7] = TailByte::construct(true, true, false, 1);
-    hal.can().inject_frame(baro_frame);
-
-    dronecan_node.process_rx();
-    auto can_baro = dronecan_node.get_baro(10);
-    assert(can_baro != nullptr);
-    assert(can_baro->is_healthy());
-    assert(std::abs(can_baro->get_pressure_pa() - 101325.0f) < 0.1f);
-    std::cout << "  -> DroneCAN Barometer received: " << can_baro->get_pressure_pa() << " Pa [PASSED]\n";
-
-    // 5. Inject MagneticField CAN message (Data Type 1001) from Node 10
-    std::cout << "\n[Step 5] Injecting DroneCAN MagneticFieldStrength message...\n";
-    hal::CANFrame mag_frame;
-    mag_frame.is_extended = true;
-    mag_frame.dlc = 8;
-    mag_frame.id = CANIDFields::construct_message_id(20, MSG_ID_MAGNETIC_FIELD, 10);
-    mag_frame.data[0] = 0; // Sensor ID 0
-    uint16_t mx = float32_to_float16(0.25f);
-    uint16_t my = float32_to_float16(0.00f);
-    uint16_t mz = float32_to_float16(0.40f);
-    std::memcpy(mag_frame.data + 1, &mx, 2);
-    std::memcpy(mag_frame.data + 3, &my, 2);
-    std::memcpy(mag_frame.data + 5, &mz, 2);
-    mag_frame.data[7] = TailByte::construct(true, true, false, 2);
-    hal.can().inject_frame(mag_frame);
-
-    dronecan_node.process_rx();
-    auto can_compass = dronecan_node.get_compass(10);
-    assert(can_compass != nullptr);
-    assert(can_compass->is_healthy());
-    assert(std::abs(can_compass->get_field_gauss().x - 0.25f) < 0.05f);
-    std::cout << "  -> DroneCAN Compass received field: X=" << can_compass->get_field_gauss().x << " Gauss [PASSED]\n";
-
-    // 6. Test SensorManager Integration with DroneCAN
-    std::cout << "\n[Step 6] Testing SensorManager auto-discovery of DroneCAN sensors...\n";
-    drivers::SensorManager sm(&hal);
-    sm.auto_discover_sensors();
-
-    // Inject another pressure frame to trigger dynamic registration
-    hal.can().inject_frame(baro_frame);
-    sm.update();
-
-    assert(sm.has_healthy_baro());
-    assert(sm.get_active_baro() != nullptr);
-    std::cout << "  -> SensorManager active barometer is: " << sm.get_active_baro()->name() << " [PASSED]\n";
-
-    std::cout << "\n>>> ALL DRONECAN PROTOCOL & SENSOR TESTS PASSED SUCCESSFULLY! <<<\n";
-    return 0;
+static std::vector<hal::CANFrame> frames_for(uint16_t dtid, uint8_t node, uint8_t tid, const uint8_t* p, size_t len) {
+    std::vector<hal::CANFrame> f(32);
+    size_t n = make_broadcast_frames(20, dtid, node, tid, p, len, f.data(), f.size());
+    f.resize(n);
+    return f;
 }
 
+int main() {
+    std::cout << "TEST: DroneCAN protocol\n";
+
+    // 1. IDs and signatures
+    CHECK(MSG_ID_RAW_IMU == 1003);
+    CHECK(MSG_ID_STATIC_PRESSURE == 1028);
+    CHECK(MSG_ID_STATIC_TEMPERATURE == 1029);
+    CHECK(MSG_ID_GNSS_FIX2 == 1063);
+    CHECK(SIG_ESC_RAW_COMMAND == 0x217F5C87D7EC951DULL);
+    CHECK(SIG_RAW_IMU == 0x8280632C40E574B5ULL);
+    CHECK(SIG_NODE_STATUS == 0x0F0868D0C1A7C6F1ULL);
+
+    // 2. 29-bit CAN ID
+    uint32_t can_id = CANIDFields::construct_message_id(24, MSG_ID_STATIC_PRESSURE, 42);
+    auto f = CANIDFields::parse(can_id);
+    CHECK(f.priority == 24 && f.data_type_id == MSG_ID_STATIC_PRESSURE && f.source_node_id == 42 && !f.is_service);
+
+    // 3. Bit-level decoding, golden vectors from libcanard's test suite
+    {
+        const uint8_t buf[7] = {0b10100101, 0b11000011, 0b11100111, 0b01111110, 0b01010101, 0b10101010, 0b11101000};
+        auto rd = [&](size_t off, uint8_t len, bool sgn) {
+            BitReader r(buf, sizeof(buf));
+            r.skip(off);
+            if (sgn) { int64_t v = 0; r.read_i(len, v); return v; }
+            uint64_t v = 0; r.read_u(len, v); return static_cast<int64_t>(v);
+        };
+        CHECK(rd(0, 8, false) == 0b10100101);
+        CHECK(rd(4, 8, false) == 0b01011100);
+        CHECK(rd(4, 4, false) == 0b00000101);
+        CHECK(rd(9, 1, false) == 1);
+        CHECK(rd(10, 1, false) == 0);
+        CHECK(rd(24, 32, false) == 0b11101000101010100101010101111110LL);
+        CHECK(rd(21, 32, false) == 0b01011101101101011100101011101111LL);
+        CHECK(rd(21, 30, false) == 0b010111101101011100101011101111LL);
+        CHECK(rd(16, 3, true) == -1);
+        CHECK(rd(2, 3, true) == -4);
+        CHECK(rd(0, 8, true) == -91);
+        CHECK(rd(0, 16, true) == -15451);
+        CHECK(rd(0, 15, true) == -7771);
+        // encode must be the exact inverse
+        uint8_t out[7] = {0};
+        BitWriter w(out, sizeof(out));
+        w.write_u(0b10100101, 8); w.write_u(0b1100001111100111LL, 16);
+        CHECK(out[0] == 0b10100101);
+        BitReader r(out, sizeof(out)); uint64_t v; r.skip(8); r.read_u(16, v);
+        CHECK(v == 0b1100001111100111LL);
+    }
+
+    // 4. float16 round trip
+    for (float v : {0.0f, 1.0f, -1.0f, 9.80665f, 0.5f, 25.4f, 0.00012f, -3000.0f}) {
+        uint8_t b[2] = {0};
+        BitWriter w(b, 2); w.write_f16(v);
+        BitReader r(b, 2); float back; r.read_f16(back);
+        CHECK(std::fabs(v - back) <= std::fabs(v) * 1e-3f + 1e-6f);
+    }
+
+    // 5. ESC RawCommand: 14-bit values in DroneCAN bit order
+    {
+        int16_t cmd[4] = {8191, 0, -8192, 1234};
+        uint8_t p[8] = {0};
+        size_t len = encode_esc_raw_command(cmd, 4, p, sizeof(p));
+        CHECK(len == 7);
+        // first value 8191 = 0x1FFF: low byte 0xFF streamed first, then the top 6 bits (011111)
+        CHECK(p[0] == 0xFF);
+        CHECK((p[1] & 0xFC) == 0x7C);
+        int16_t back[20]; uint8_t n = 0;
+        decode_esc_raw_command(p, len, back, n);
+        CHECK(n == 4 && back[0] == 8191 && back[1] == 0 && back[2] == -8192 && back[3] == 1234);
+
+        control::ActuatorMatrixMixer mixer(control::MixerPreset::UAV_QUAD_X);
+        control::ControlDemands d; d.throttle = 0.5f;
+        hal::CANFrame esc; uint8_t tid = 0;
+        CHECK(mixer.generate_dronecan_esc_frame(d, tid, esc, true));
+        CHECK(CANIDFields::parse(esc.id).data_type_id == 1030);
+        CHECK(esc.id == 0x14040601u);
+        decode_esc_raw_command(esc.data, esc.dlc - 1, back, n);
+        CHECK(n == 4);
+        CHECK(std::abs(back[0] - 4096) < 10);
+    }
+
+    // 6. Multi-frame RawIMU through the transport, CRC and toggles checked
+    hal::PosixHAL hal;
+    hal.time().set_manual_time_mode(true);
+    {
+        RawIMUMsg imu;
+        imu.gyro[0] = 0.1f; imu.gyro[1] = -0.2f; imu.gyro[2] = 0.3f;
+        imu.accel[0] = 0.5f; imu.accel[1] = -0.25f; imu.accel[2] = -9.80665f;
+        uint8_t p[64];
+        size_t len = encode_raw_imu(imu, p, sizeof(p));
+        CHECK(len == 47);
+        auto frames = frames_for(MSG_ID_RAW_IMU, 11, 5, p, len);
+        CHECK(frames.size() == 7); // 5 + 6x7 = 47
+        CHECK((frames[0].data[frames[0].dlc - 1] & 0xA0) == 0x80);  // SOT, toggle 0
+        CHECK((frames.back().data[frames.back().dlc - 1] & 0x40) == 0x40); // EOT
+
+        Reassembler rx;
+        Transfer t; bool got = false;
+        for (auto& fr : frames) got = rx.accept(fr, 0, t) || got;
+        CHECK(got && t.len == 47 && t.source_node == 11);
+        RawIMUMsg dec;
+        CHECK(decode_raw_imu(t.payload, t.len, dec));
+        CHECK_NEAR(dec.gyro[1], -0.2, 1e-3);
+        CHECK_NEAR(dec.accel[2], -9.80665, 1e-2);
+
+        // corrupt one byte -> CRC rejects the whole transfer
+        auto bad = frames;
+        bad[3].data[2] ^= 0x10;
+        Reassembler rx2; got = false;
+        for (auto& fr : bad) got = rx2.accept(fr, 0, t) || got;
+        CHECK(!got && rx2.crc_errors() == 1);
+
+        // dropped middle frame -> toggle mismatch, rejected
+        auto dropped = frames;
+        dropped.erase(dropped.begin() + 2);
+        Reassembler rx3; got = false;
+        for (auto& fr : dropped) got = rx3.accept(fr, 0, t) || got;
+        CHECK(!got && rx3.sequence_errors() >= 1);
+
+        // full node path
+        DroneCANNode node(&hal.can(), hal.get_time(), 1);
+        CHECK(node.init(1000000));
+        for (auto& fr : frames) hal.can().inject_frame(fr);
+        node.process_rx();
+        auto can_imu = node.get_imu(11);
+        CHECK(can_imu != nullptr);
+        if (can_imu) {
+            CHECK_NEAR(can_imu->get_gyro().z, 0.3, 1e-3);
+            CHECK_NEAR(can_imu->get_accel().z, -9.80665, 1e-2);
+        }
+    }
+
+    // 7. GNSS Fix2 round trip (multi-frame, 37-bit signed lat/lon)
+    {
+        GnssFix2Msg g;
+        g.lat_deg = 26.5123456; g.lon_deg = -80.2329871; g.height_msl_m = 125.4f;
+        g.ned_velocity[0] = 1.5f; g.ned_velocity[1] = -2.0f; g.ned_velocity[2] = 0.1f;
+        g.sats_used = 14; g.status = 3;
+        uint8_t p[64];
+        size_t len = encode_gnss_fix2(g, p, sizeof(p));
+        CHECK(len == 50);
+        GnssFix2Msg d;
+        CHECK(decode_gnss_fix2(p, len, d));
+        CHECK_NEAR(d.lat_deg, 26.5123456, 1e-7);
+        CHECK_NEAR(d.lon_deg, -80.2329871, 1e-7);
+        CHECK_NEAR(d.height_msl_m, 125.4, 1e-3);
+        CHECK(d.sats_used == 14 && d.status == 3);
+        CHECK_NEAR(d.ned_velocity[1], -2.0, 1e-6);
+    }
+
+    // 8. Single-frame messages through the node + SensorManager, then unplug -> timeout
+    {
+        drivers::SensorManager sm(&hal);
+        sm.auto_discover_sensors();
+
+        auto send = [&](uint16_t dtid, const uint8_t* p, size_t len, uint8_t tid) {
+            for (auto& fr : frames_for(dtid, 10, tid, p, len)) hal.can().inject_frame(fr);
+        };
+        NodeStatusMsg ns; ns.uptime_sec = 50;
+        uint8_t p[16];
+        send(MSG_ID_NODE_STATUS, p, encode_node_status(ns, p, sizeof(p)), 0);
+        StaticPressureMsg sp; sp.pressure_pa = 101325.0f;
+        send(MSG_ID_STATIC_PRESSURE, p, encode_static_pressure(sp, p, sizeof(p)), 1);
+        MagFieldMsg mf; mf.field_ga[0] = 0.25f; mf.field_ga[2] = 0.40f;
+        send(MSG_ID_MAGNETIC_FIELD, p, encode_mag_field(mf, false, p, sizeof(p)), 2);
+        sm.update();
+
+        auto* dn = sm.get_dronecan();
+        CHECK(dn && dn->get_active_node_count() == 1);
+        CHECK(sm.has_healthy_baro());
+        CHECK(sm.get_active_baro() && std::fabs(sm.get_active_baro()->get_pressure_pa() - 101325.0f) < 0.1f);
+        CHECK(sm.has_healthy_compass());
+        CHECK(sm.get_active_compass() && std::fabs(sm.get_active_compass()->get_field_gauss().x - 0.25f) < 1e-3f);
+
+        // repeated updates must not keep re-registering the same CAN sensors
+        size_t n_before = sm.get_all_sensors().size();
+        for (int i = 0; i < 100; ++i) { send(MSG_ID_STATIC_PRESSURE, p, encode_static_pressure(sp, p, sizeof(p)), 3); sm.update(); }
+        CHECK(sm.get_all_sensors().size() == n_before);
+
+        // unplug the CAN node: no more frames -> barometer times out
+        hal.time().advance_time_ms(drivers::SensorManager::BARO_TIMEOUT_MS + 100);
+        sm.update();
+        CHECK(!sm.has_healthy_baro());
+    }
+
+    std::cout << ">>> DroneCAN tests done\n";
+    return test::finish("test_dronecan");
+}

@@ -1,7 +1,7 @@
 #include "hal/posix/posix_hal.hpp"
 #include "drivers/sensor_manager.hpp"
 #include "fusion/ahrs_interface.hpp"
-#include <cassert>
+#include "tests/test_common.hpp"
 #include <iostream>
 #include <cmath>
 
@@ -66,27 +66,28 @@ int main() {
     fusion::SensorFusion fusion(&sm);
     fusion.reset();
 
-    // Test 1: Level flight (Accel Z = +9.81, Gyro = 0)
+    // Test 1: Level, at rest. Accelerometers measure specific force, so a level
+    // FRD IMU reads (0, 0, -g).
     std::cout << "[Step 1] Testing level attitude convergence...\n";
-    mock_imu->set_data(math::Vector3f(0.0f, 0.0f, 9.80665f), math::Vector3f(0.0f, 0.0f, 0.0f));
+    mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -9.80665f), math::Vector3f(0.0f, 0.0f, 0.0f));
 
     for (int i = 0; i < 200; ++i) {
         fusion.update(0.01f); // 100Hz
     }
 
     const auto& state = fusion.get_state();
-    assert(state.attitude_valid);
+    CHECK(state.attitude_valid);
     std::cout << "  -> Roll: " << state.euler_rad.x * (180.0f / M_PI)
               << " deg | Pitch: " << state.euler_rad.y * (180.0f / M_PI) << " deg\n";
-    assert(std::abs(state.euler_rad.x) < 0.02f);
-    assert(std::abs(state.euler_rad.y) < 0.02f);
+    CHECK(std::abs(state.euler_rad.x) < 0.02f);
+    CHECK(std::abs(state.euler_rad.y) < 0.02f);
     std::cout << "  -> Level convergence [PASSED]\n";
 
     // Test 2: 30-degree Roll Tilt
     std::cout << "\n[Step 2] Testing roll tilt response (30 deg)...\n";
     float roll_rad = 30.0f * (M_PI / 180.0f);
-    // Body accel under roll: ax = 0, ay = 9.80665 * sin(roll), az = 9.80665 * cos(roll)
-    mock_imu->set_data(math::Vector3f(0.0f, 9.80665f * std::sin(roll_rad), 9.80665f * std::cos(roll_rad)),
+    // Rolled right by 30 deg at rest: specific force = (0, -g sin(roll), -g cos(roll))
+    mock_imu->set_data(math::Vector3f(0.0f, -9.80665f * std::sin(roll_rad), -9.80665f * std::cos(roll_rad)),
                        math::Vector3f(0.0f, 0.0f, 0.0f));
 
     for (int i = 0; i < 500; ++i) {
@@ -95,7 +96,7 @@ int main() {
 
     float final_roll_deg = fusion.get_state().euler_rad.x * (180.0f / M_PI);
     std::cout << "  -> Settled Roll Angle: " << final_roll_deg << " deg (Target: ~30 deg)\n";
-    assert(std::abs(final_roll_deg - 30.0f) < 1.0f);
+    CHECK(std::abs(final_roll_deg - 30.0f) < 1.0f);
     std::cout << "  -> Attitude tilt convergence [PASSED]\n";
 
     // Test 3: Altitude climb tracking
@@ -105,9 +106,26 @@ int main() {
         fusion.update(0.01f);
     }
     std::cout << "  -> Estimated Altitude: " << fusion.get_state().altitude_m << " m (Target: ~15m)\n";
-    assert(std::abs(fusion.get_state().altitude_m - 15.0f) < 0.5f);
+    CHECK(std::abs(fusion.get_state().altitude_m - 15.0f) < 0.5f);
     std::cout << "  -> Altitude estimator [PASSED]\n";
 
+    // Test 4: vertical acceleration sign. Thrusting upward at 2 m/s^2 while level
+    // means the accelerometer reads (0,0,-(g+2)); the estimator must see +2 m/s^2 UP.
+    std::cout << "\n[Step 4] Testing vertical acceleration sign...\n";
+    mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -9.80665f), math::Vector3f(0.0f, 0.0f, 0.0f));
+    for (int i = 0; i < 500; ++i) fusion.update(0.01f);
+    mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -(9.80665f + 2.0f)), math::Vector3f(0.0f, 0.0f, 0.0f));
+    fusion.update(0.01f);
+    CHECK_NEAR(-fusion.get_state().linear_accel_ned.z, 2.0, 0.05);
+    std::cout << "  -> Upward accel seen as " << -fusion.get_state().linear_accel_ned.z << " m/s^2 up [PASSED]\n";
+
+    // Test 5: dissimilar backup estimator takes over when the primary is corrupted
+    std::cout << "\n[Step 5] Estimator selector prefers the primary while both agree...\n";
+    mock_imu->set_data(math::Vector3f(0.0f, 0.0f, -9.80665f), math::Vector3f(0.0f, 0.0f, 0.0f));
+    for (int i = 0; i < 300; ++i) fusion.update(0.01f);
+    CHECK(fusion.get_state().attitude_source == 0);
+    std::cout << "  -> Primary in use while estimators agree [PASSED]\n";
+
     std::cout << "\n>>> ALL SENSOR FUSION TESTS PASSED SUCCESSFULLY! <<<\n";
-    return 0;
+    return test::finish("test_sensor_fusion");
 }

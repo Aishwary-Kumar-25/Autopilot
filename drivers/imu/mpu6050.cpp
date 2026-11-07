@@ -13,7 +13,9 @@ static constexpr uint8_t REG_PWR_MGMT_1   = 0x6B;
 static constexpr uint8_t REG_SIGNAL_RESET = 0x68;
 
 MPU6050::MPU6050(hal::I2CDevice* i2c, hal::Time* time, uint8_t i2c_addr)
-    : _i2c(i2c), _time(time), _i2c_addr(i2c_addr) {}
+    : _i2c(i2c), _time(time), _i2c_addr(i2c_addr) {
+    // Breakout boards are usually mounted component side up: chip z points up.
+    _rotation = SensorRotation::ROLL_180;}
 
 bool MPU6050::verify_device_id() {
     if (!_i2c) return false;
@@ -100,6 +102,10 @@ bool MPU6050::update() {
     _gyro_rad_s.x = (gx * GYRO_SCALE_2000DPS) - _gyro_bias.x;
     _gyro_rad_s.y = (gy * GYRO_SCALE_2000DPS) - _gyro_bias.y;
     _gyro_rad_s.z = (gz * GYRO_SCALE_2000DPS) - _gyro_bias.z;
+
+    // chip axes -> FRD body frame (see SensorRotation in sensor_interface.hpp)
+    _accel_m_s2 = apply_rotation(_rotation, _accel_m_s2);
+    _gyro_rad_s = apply_rotation(_rotation, _gyro_rad_s);
 
     _temperature_c = (temp / 340.0f) + 36.53f;
 

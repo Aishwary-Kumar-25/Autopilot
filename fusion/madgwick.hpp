@@ -27,6 +27,7 @@ public:
                      const math::Vector3f& mag, float dt);
 
     const math::Quaternion& get_quaternion() const { return _q; }
+    void set_quaternion(const math::Quaternion& q) { _q = q; }
     void get_euler_angles(float& roll, float& pitch, float& yaw) const;
 
 private:

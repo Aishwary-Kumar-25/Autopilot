@@ -11,7 +11,9 @@ static constexpr uint8_t REG_CONTROL_2      = 0x0A;
 static constexpr uint8_t REG_SET_RESET      = 0x0B;
 
 QMC5883L::QMC5883L(hal::I2CDevice* i2c, hal::Time* time, uint8_t i2c_addr)
-    : _i2c(i2c), _time(time), _i2c_addr(i2c_addr) {}
+    : _i2c(i2c), _time(time), _i2c_addr(i2c_addr) {
+    // Breakout boards are usually mounted component side up: chip z points up.
+    _rotation = SensorRotation::ROLL_180;}
 
 bool QMC5883L::init() {
     if (!_i2c || !_time) {
@@ -60,11 +62,9 @@ bool QMC5883L::update() {
     _field_gauss.y = y * GAUSS_SCALE_2G;
     _field_gauss.z = z * GAUSS_SCALE_2G;
 
-    // Calculate planar heading
-    _heading_rad = std::atan2(_field_gauss.y, _field_gauss.x);
-    if (_heading_rad < 0.0f) {
-        _heading_rad += 2.0f * static_cast<float>(M_PI);
-    }
+    // chip axes -> FRD body frame, then planar heading
+    _field_gauss = apply_rotation(_rotation, _field_gauss);
+    _heading_rad = heading_from_field(_field_gauss);
 
     record_success(_time->millis());
     return true;

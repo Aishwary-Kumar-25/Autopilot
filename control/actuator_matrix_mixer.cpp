@@ -1,5 +1,7 @@
 #include "actuator_matrix_mixer.hpp"
 #include <cstring>
+#include <cmath>
+#include "drivers/can/dronecan_codec.hpp"
 #include <algorithm>
 
 namespace autopilot {
@@ -419,50 +421,34 @@ void ActuatorMatrixMixer::output_to_actuators(const ControlDemands& demands, hal
 // ---------------- DroneCAN ESC Output Integration ----------------
 
 bool ActuatorMatrixMixer::generate_dronecan_esc_frame(const ControlDemands& demands, uint8_t& transfer_id, hal::CANFrame& out_frame, bool armed) const {
-    // DroneCAN / UAVCAN RawCommand (Message ID 1030 / 0x406)
-    // 29-bit CAN ID structure: Priority (5b) | MsgID (16b) | Service (1b=0) | NodeID (7b)
-    constexpr uint32_t PRIORITY = 20; // Default DroneCAN ESC priority
-    constexpr uint32_t MESSAGE_TYPE_ID = 1030;
-    constexpr uint8_t SOURCE_NODE_ID = 1; // Autopilot primary node
-
-    out_frame.id = (PRIORITY << 24) | (MESSAGE_TYPE_ID << 8) | (SOURCE_NODE_ID & 0x7F);
-    out_frame.is_extended = true;
-    out_frame.is_rtr = false;
-    std::memset(out_frame.data, 0, 8);
+    // uavcan.equipment.esc.RawCommand (1030): int14[<=20] cmd, range [-8192, 8191].
+    // Serialised with the DroneCAN bit order (see drivers/can/dronecan_codec.hpp).
+    // Up to 4 ESCs fit in one frame (4 x 14 bit = 7 bytes + tail byte).
+    constexpr uint8_t PRIORITY = 20;      // high priority for actuator commands
+    constexpr uint8_t SOURCE_NODE_ID = 1; // autopilot node id
 
     float normalized[hal::PWMOutput::MAX_CHANNELS]{0.0f};
     if (armed) {
         get_normalized_outputs(demands, normalized, _num_channels);
     }
 
-    // UAVCAN RawCommand packs up to 4 ESC setpoints into 14-bit signed integers [-8192, 8191]
-    // 4 * 14 bits = 56 bits = 7 bytes. Byte 7 contains the DroneCAN single-frame tail byte.
     int16_t esc_cmd[4]{0, 0, 0, 0};
-    uint8_t count = std::min<uint8_t>(_num_channels, 4);
-
+    const uint8_t count = std::min<uint8_t>(_num_channels, 4);
     for (uint8_t i = 0; i < count; ++i) {
         if (_actuators[i].enabled && armed) {
-            int16_t val = static_cast<int16_t>(normalized[i] * 8191.0f);
-            esc_cmd[i] = std::clamp<int16_t>(val, -8192, 8191);
+            const float v = std::clamp(normalized[i], -1.0f, 1.0f);
+            esc_cmd[i] = static_cast<int16_t>(std::lround(v * 8191.0f));
         }
     }
 
-    // Bit-packing 4x 14-bit fields into 7 bytes
-    uint64_t bitstream = 0;
-    bitstream |= (static_cast<uint64_t>(esc_cmd[0] & 0x3FFF) << 0);
-    bitstream |= (static_cast<uint64_t>(esc_cmd[1] & 0x3FFF) << 14);
-    bitstream |= (static_cast<uint64_t>(esc_cmd[2] & 0x3FFF) << 28);
-    bitstream |= (static_cast<uint64_t>(esc_cmd[3] & 0x3FFF) << 42);
-
-    for (int b = 0; b < 7; ++b) {
-        out_frame.data[b] = static_cast<uint8_t>((bitstream >> (b * 8)) & 0xFF);
+    uint8_t payload[8];
+    const size_t len = drivers::dronecan::encode_esc_raw_command(esc_cmd, count, payload, sizeof(payload));
+    if (len == 0 || len > 7) return false;
+    if (drivers::dronecan::make_broadcast_frames(PRIORITY, drivers::dronecan::MSG_ID_ESC_RAW_COMMAND, SOURCE_NODE_ID,
+                                                 transfer_id, payload, len, &out_frame, 1) != 1) {
+        return false;
     }
-
-    // Tail byte: Start=1, End=1, Toggle=0, TransferID (5 bits)
-    out_frame.data[7] = 0xC0 | (transfer_id & 0x1F);
     transfer_id = (transfer_id + 1) & 0x1F;
-    out_frame.dlc = 8;
-
     return true;
 }
 

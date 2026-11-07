@@ -32,6 +32,7 @@ struct VehicleState {
     bool attitude_valid{false};
     bool altitude_valid{false};
     bool position_valid{false};
+    uint8_t attitude_source{0};   // 0 = primary (Madgwick), 1 = backup (complementary)
     uint32_t last_update_ms{0};
 };
 

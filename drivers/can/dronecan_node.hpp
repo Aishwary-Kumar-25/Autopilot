@@ -3,6 +3,7 @@
 #include "hal/hal.hpp"
 #include "dronecan_types.hpp"
 #include "dronecan_sensors.hpp"
+#include "dronecan_codec.hpp"
 #include <unordered_map>
 #include <memory>
 #include <vector>
@@ -44,6 +45,8 @@ public:
     }
 
     size_t get_active_node_count() const { return _active_nodes.size(); }
+    const Reassembler& transport() const { return _rx; }
+    uint32_t unknown_or_bad_payloads() const { return _bad_payloads; }
 
 private:
     hal::CANDevice* _can{nullptr};
@@ -66,13 +69,10 @@ private:
     std::unordered_map<uint8_t, std::shared_ptr<DroneCAN_GPS>> _gps_modules;
     std::vector<std::shared_ptr<Sensor>> _all_can_sensors;
 
-    void handle_frame(const hal::CANFrame& frame);
-    void handle_node_status(uint8_t source_node, const uint8_t* payload, uint8_t len);
-    void handle_raw_imu(uint8_t source_node, const uint8_t* payload, uint8_t len);
-    void handle_static_pressure(uint8_t source_node, const uint8_t* payload, uint8_t len);
-    void handle_static_temperature(uint8_t source_node, const uint8_t* payload, uint8_t len);
-    void handle_magnetic_field(uint8_t source_node, const uint8_t* payload, uint8_t len);
-    void handle_gnss_fix(uint8_t source_node, const uint8_t* payload, uint8_t len);
+    Reassembler _rx;
+    uint32_t _bad_payloads{0};
+
+    void handle_transfer(const Transfer& t);
 };
 
 } // namespace dronecan

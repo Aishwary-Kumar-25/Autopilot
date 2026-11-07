@@ -87,10 +87,7 @@ void DroneCAN_Compass::ingest_mag_field(const math::Vector3f& field_gauss, uint3
     _field_gauss = field_gauss;
     _last_packet_ms = timestamp_ms;
 
-    _heading_rad = std::atan2(_field_gauss.y, _field_gauss.x);
-    if (_heading_rad < 0.0f) {
-        _heading_rad += 2.0f * static_cast<float>(M_PI);
-    }
+    _heading_rad = heading_from_field(_field_gauss);
     record_success(timestamp_ms);
 }
 
@@ -121,8 +118,17 @@ void DroneCAN_GPS::ingest_gnss_fix(double lat_deg, double lon_deg, float alt_m, 
     _data.has_fix = (fix_type >= 3);
     _data.timestamp_ms = timestamp_ms;
     _last_packet_ms = timestamp_ms;
+    // Without a NED velocity field, derive horizontal velocity from speed/course.
+    const float course = heading_deg * 0.0174532925f;
+    _data.velocity_ned = math::Vector3f(speed_m_s * std::cos(course), speed_m_s * std::sin(course), 0.0f);
+    _data.has_velocity_ned = false;
 
     record_success(timestamp_ms);
+}
+
+void DroneCAN_GPS::ingest_velocity_ned(const math::Vector3f& vel_ned) {
+    _data.velocity_ned = vel_ned;
+    _data.has_velocity_ned = true;
 }
 
 } // namespace dronecan

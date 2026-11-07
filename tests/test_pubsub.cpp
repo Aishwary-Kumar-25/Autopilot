@@ -1,7 +1,7 @@
 #include "system/pubsub.hpp"
 #include "fusion/state_types.hpp"
 #include "control/vehicle_mixer.hpp"
-#include <cassert>
+#include "tests/test_common.hpp"
 #include <iostream>
 
 using namespace autopilot;
@@ -18,8 +18,8 @@ int main() {
     auto uav_sub = state_topic.subscribe();
     auto telem_sub = state_topic.subscribe();
 
-    assert(!uav_sub.updated());
-    assert(!telem_sub.updated());
+    CHECK(!uav_sub.updated());
+    CHECK(!telem_sub.updated());
     std::cout << "[Step 1] Verified initial subscriber states (no pending messages) [PASSED]\n";
 
     // 3. Publish a new VehicleState message
@@ -28,24 +28,24 @@ int main() {
     state1.euler_rad.x = 0.15f; // Roll ~8.6 deg
     state_topic.publish(state1);
 
-    assert(uav_sub.updated());
-    assert(telem_sub.updated());
+    CHECK(uav_sub.updated());
+    CHECK(telem_sub.updated());
     std::cout << "[Step 2] Published state message; both subscribers alerted [PASSED]\n";
 
     // 4. Copy data to UAV controller subscriber
     fusion::VehicleState uav_received;
     bool new_data = uav_sub.copy(uav_received);
-    assert(new_data);
-    assert(uav_received.altitude_m == 12.5f);
-    assert(!uav_sub.updated()); // Already read
-    assert(telem_sub.updated()); // Telemetry hasn't read yet
+    CHECK(new_data);
+    CHECK(uav_received.altitude_m == 12.5f);
+    CHECK(!uav_sub.updated()); // Already read
+    CHECK(telem_sub.updated()); // Telemetry hasn't read yet
     std::cout << "[Step 3] UAV subscriber consumed fresh state cleanly [PASSED]\n";
 
     // 5. Telemetry subscriber reads
     fusion::VehicleState telem_received;
-    assert(telem_sub.copy(telem_received));
-    assert(telem_received.altitude_m == 12.5f);
-    assert(!telem_sub.updated());
+    CHECK(telem_sub.copy(telem_received));
+    CHECK(telem_received.altitude_m == 12.5f);
+    CHECK(!telem_sub.updated());
     std::cout << "[Step 4] Telemetry subscriber consumed fresh state cleanly [PASSED]\n";
 
     // 6. Dynamic Vehicle Switching Simulation:
@@ -59,11 +59,11 @@ int main() {
     demand_topic.publish(rover_demands);
 
     control::ControlDemands active_demands;
-    assert(mixer_sub.copy(active_demands));
-    assert(active_demands.forward == 0.8f);
+    CHECK(mixer_sub.copy(active_demands));
+    CHECK(active_demands.forward == 0.8f);
     std::cout << "[Step 5] Dynamic vehicle demand routing verified [PASSED]\n";
 
     std::cout << "\n>>> ALL PUBLISH/SUBSCRIBE MIDDLEWARE TESTS PASSED! <<<\n";
-    return 0;
+    return test::finish("test_pubsub");
 }
 

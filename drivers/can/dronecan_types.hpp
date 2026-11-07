@@ -8,14 +8,43 @@ namespace autopilot {
 namespace drivers {
 namespace dronecan {
 
-// Standard DroneCAN Message Data Type IDs (16-bit)
+// Standard DroneCAN message data type IDs and signatures.
+// IDs come from the file names in https://github.com/DroneCAN/DSDL; signatures were
+// computed with tools/dsdl_signature.py and cross-checked against ArduPilot's
+// dsdlc-generated headers. A wrong signature makes every multi-frame transfer
+// fail its CRC, so do not edit these by hand.
 static constexpr uint16_t MSG_ID_NODE_STATUS         = 341;  // uavcan.protocol.NodeStatus
-static constexpr uint16_t MSG_ID_RAW_IMU             = 1000; // uavcan.equipment.ahrs.RawIMU
+static constexpr uint16_t MSG_ID_RAW_IMU             = 1003; // uavcan.equipment.ahrs.RawIMU  (1000 is ahrs.Solution)
 static constexpr uint16_t MSG_ID_MAGNETIC_FIELD      = 1001; // uavcan.equipment.ahrs.MagneticFieldStrength
-static constexpr uint16_t MSG_ID_STATIC_PRESSURE     = 1020; // uavcan.equipment.air_data.StaticPressure
-static constexpr uint16_t MSG_ID_STATIC_TEMPERATURE  = 1021; // uavcan.equipment.air_data.StaticTemperature
-static constexpr uint16_t MSG_ID_GNSS_FIX            = 1060; // uavcan.equipment.gnss.Fix
-static constexpr uint16_t MSG_ID_GNSS_FIX2           = 1063; // uavcan.equipment.gnss.Fix2
+static constexpr uint16_t MSG_ID_MAGNETIC_FIELD2     = 1002; // uavcan.equipment.ahrs.MagneticFieldStrength2
+static constexpr uint16_t MSG_ID_STATIC_PRESSURE     = 1028; // uavcan.equipment.air_data.StaticPressure (1020 is TrueAirspeed)
+static constexpr uint16_t MSG_ID_STATIC_TEMPERATURE  = 1029; // uavcan.equipment.air_data.StaticTemperature
+static constexpr uint16_t MSG_ID_ESC_RAW_COMMAND     = 1030; // uavcan.equipment.esc.RawCommand
+static constexpr uint16_t MSG_ID_GNSS_FIX2           = 1063; // uavcan.equipment.gnss.Fix2 (Fix/1060 is deprecated)
+
+static constexpr uint64_t SIG_NODE_STATUS         = 0x0F0868D0C1A7C6F1ULL;
+static constexpr uint64_t SIG_RAW_IMU             = 0x8280632C40E574B5ULL;
+static constexpr uint64_t SIG_MAGNETIC_FIELD      = 0xE2A7D4A9460BC2F2ULL;
+static constexpr uint64_t SIG_MAGNETIC_FIELD2     = 0xB6AC0C442430297EULL;
+static constexpr uint64_t SIG_STATIC_PRESSURE     = 0xCDC7C43412BDC89AULL;
+static constexpr uint64_t SIG_STATIC_TEMPERATURE  = 0x49272A6477D96271ULL;
+static constexpr uint64_t SIG_ESC_RAW_COMMAND     = 0x217F5C87D7EC951DULL;
+static constexpr uint64_t SIG_GNSS_FIX2           = 0xCA41E7000F37435FULL;
+
+/** Returns the data type signature for a message we know how to handle, or 0. */
+inline uint64_t signature_for(uint16_t data_type_id) {
+    switch (data_type_id) {
+        case MSG_ID_NODE_STATUS:        return SIG_NODE_STATUS;
+        case MSG_ID_RAW_IMU:            return SIG_RAW_IMU;
+        case MSG_ID_MAGNETIC_FIELD:     return SIG_MAGNETIC_FIELD;
+        case MSG_ID_MAGNETIC_FIELD2:    return SIG_MAGNETIC_FIELD2;
+        case MSG_ID_STATIC_PRESSURE:    return SIG_STATIC_PRESSURE;
+        case MSG_ID_STATIC_TEMPERATURE: return SIG_STATIC_TEMPERATURE;
+        case MSG_ID_ESC_RAW_COMMAND:    return SIG_ESC_RAW_COMMAND;
+        case MSG_ID_GNSS_FIX2:          return SIG_GNSS_FIX2;
+        default:                        return 0;
+    }
+}
 
 // Node Health Codes (uavcan.protocol.NodeStatus.health)
 enum class NodeHealth : uint8_t {

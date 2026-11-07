@@ -32,7 +32,7 @@ public:
 
 private:
     uint8_t _node_id{0};
-    math::Vector3f _accel{0.0f, 0.0f, 9.80665f};
+    math::Vector3f _accel{0.0f, 0.0f, -9.80665f}; // FRD specific force at rest
     math::Vector3f _gyro{0.0f, 0.0f, 0.0f};
     math::Vector3f _gyro_bias{0.0f, 0.0f, 0.0f};
     float _temperature{25.0f};
@@ -111,6 +111,7 @@ public:
     uint8_t get_node_id() const { return _node_id; }
     void ingest_gnss_fix(double lat_deg, double lon_deg, float alt_m, float speed_m_s,
                          float heading_deg, uint8_t fix_type, uint8_t sats, uint32_t timestamp_ms);
+    void ingest_velocity_ned(const math::Vector3f& vel_ned);
 
 private:
     uint8_t _node_id{0};

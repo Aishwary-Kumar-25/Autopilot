@@ -82,6 +82,7 @@ if(ENABLE_CAN_DRONECAN)
     list(APPEND CORE_SOURCES
         drivers/can/dronecan_sensors.cpp
         drivers/can/dronecan_node.cpp
+        drivers/can/dronecan_codec.cpp
     )
     add_compile_definitions(ENABLE_CAN_DRONECAN=1)
 endif()
