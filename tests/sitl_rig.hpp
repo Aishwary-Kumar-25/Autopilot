@@ -23,6 +23,7 @@ struct Rig {
     sim::QuadModel quad;
     sim::SimContext ctx;
     std::shared_ptr<sim::SimIMU> imu0, imu1;
+    std::shared_ptr<sim::SimBaro> baro;
     std::shared_ptr<sim::SimGPS> gps; // null unless the rig was built with_gps
     std::unique_ptr<vehicles::VehicleManager> vm;
     vehicles::UAVVehicle* uav{nullptr};
@@ -42,7 +43,8 @@ struct Rig {
         imu1 = std::make_shared<sim::SimIMU>(&ctx, "SIM_IMU1");
         vm->get_sensors()->register_sensor(imu0);
         vm->get_sensors()->register_sensor(imu1);
-        vm->get_sensors()->register_sensor(std::make_shared<sim::SimBaro>(&ctx));
+        baro = std::make_shared<sim::SimBaro>(&ctx);
+        vm->get_sensors()->register_sensor(baro);
         vm->get_sensors()->register_sensor(std::make_shared<sim::SimCompass>(&ctx));
         if (with_gps) {
             gps = std::make_shared<sim::SimGPS>(&ctx);

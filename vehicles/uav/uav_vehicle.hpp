@@ -144,6 +144,10 @@ private:
     bool yaw_abandoned() const;
 
     float _hover_throttle{0.5f};
+    // Level-equivalent collective that was holding altitude over the last ~second
+    // (ALT_HOLD with a valid altitude). If the altitude estimate is lost, mid stick
+    // keeps this collective instead of a hover guess. 0 = not known yet.
+    float _althold_thr_lp{0.0f};
     float _last_throttle{0.0f};
     bool _landed{true};
     float _landed_timer_s{0.0f};

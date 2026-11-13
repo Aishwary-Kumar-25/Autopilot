@@ -201,6 +201,7 @@ public:
     const char* name() const override { return _name; }
     bool init() override { return true; }
     void set_fault(Fault f) { _fault = f; }
+    Fault fault() const { return _fault; }
     // Residual bias left after the boot calibration (e.g. temperature drift in flight).
     math::Vector3f gyro_bias{0, 0, 0};
     // Accelerometer noise, m/s^2 rms per sample (0.05 = clean bench; motor vibration on
@@ -243,13 +244,17 @@ public:
     const char* name() const override { return "SIM_BARO"; }
     bool init() override { return true; }
     void set_fault(Fault f) { _fault = f; }
+    Fault fault() const { return _fault; }
+    double offset_m = 0.0;   // altitude error (weather drift, prop wash on the port)
+    double noise_m = 0.08;   // rms per sample
     bool update() override {
         if (_fault == Fault::DROPOUT) return false;
         // 50 Hz like a real baro: only produce a new sample every 20 ms
         const uint32_t now = _ctx->time->millis();
         if (_sample_count > 0 && now - _last_ms < 20) return true;
         _last_ms = now;
-        _alt = float(_ctx->model->altitude() + _ctx->noise(0.08));
+        if (_fault == Fault::STUCK) { record_success(now); return true; }   // frozen reading
+        _alt = float(_ctx->model->altitude() + offset_m + _ctx->noise(noise_m));
         _pressure = float(101325.0 * std::pow(1.0 - _alt / 44330.0, 1.0 / 0.190295));
         record_success(now);
         return true;
@@ -272,11 +277,17 @@ public:
     drivers::SensorType type() const override { return drivers::SensorType::MAGNETOMETER; }
     const char* name() const override { return "SIM_MAG"; }
     bool init() override { return true; }
+    void set_fault(Fault f) { _fault = f; }
+    Fault fault() const { return _fault; }
+    // Body-frame field added to the reading (gauss): motor current / steel nearby.
+    V3 interference;
     bool update() override {
+        if (_fault == Fault::DROPOUT) return false;
         const uint32_t now = _ctx->time->millis();
         if (_sample_count > 0 && now - _last_ms < 10) return true;
         _last_ms = now;
-        const V3 b = _ctx->model->ned_to_body(V3(0.2, 0.0, 0.4)); // gauss, northern hemisphere
+        if (_fault == Fault::STUCK) { record_success(now); return true; }
+        const V3 b = _ctx->model->ned_to_body(V3(0.2, 0.0, 0.4)) + interference; // gauss, northern hemisphere
         _field = math::Vector3f(float(b.x + _ctx->noise(0.003)), float(b.y + _ctx->noise(0.003)),
                                 float(b.z + _ctx->noise(0.003)));
         _heading = heading_from_field(_field);
@@ -288,6 +299,7 @@ public:
 
 private:
     SimContext* _ctx;
+    Fault _fault{Fault::NONE};
     uint32_t _last_ms{0};
     math::Vector3f _field{0.2f, 0.0f, 0.4f};
     float _heading{0.0f};
@@ -304,10 +316,16 @@ public:
     uint32_t latency_ms = 100;
     double vel_noise = 0.05, pos_noise = 0.3;
 
+    // Position error added to every fix (NED, m): multipath, or a spoofer walking the fix away.
+    V3 pos_offset;
+    // Velocity error added to every fix (NED, m/s), e.g. a spoofer dragging the solution.
+    V3 vel_offset;
+
     explicit SimGPS(SimContext* ctx) : _ctx(ctx) { _health = drivers::SensorHealth::HEALTHY; }
     const char* name() const override { return "SIM_GPS"; }
     bool init() override { return true; }
     void set_fault(Fault f) { _fault = f; }
+    Fault fault() const { return _fault; }
 
     bool update() override {
         if (_fault == Fault::DROPOUT) return false;
@@ -323,6 +341,7 @@ public:
             if (h.t_ms != 0 && now - h.t_ms >= latency_ms && (!s || h.t_ms > s->t_ms)) s = &h;
         }
         if (!s) return true;
+        if (_fault == Fault::STUCK) { _data.timestamp_ms = now; record_success(now); return true; }
         if (!_ctx->model->gps_available()) {     // e.g. submerged: receiver reports no fix
             _data.has_fix = false;
             _data.fix_type = 0;
@@ -336,12 +355,13 @@ public:
         _data.has_fix = true;
         _data.fix_type = 3;
         _data.satellites = 14;
-        _data.latitude_deg = HOME_LAT + (s->pos.x + _ctx->noise(pos_noise)) / R / d2r;
-        _data.longitude_deg = HOME_LON + (s->pos.y + _ctx->noise(pos_noise)) / (R * std::cos(HOME_LAT * d2r)) / d2r;
-        _data.altitude_msl_m = float(120.0 - s->pos.z);
-        _data.velocity_ned = math::Vector3f(float(s->vel.x + _ctx->noise(vel_noise)),
-                                            float(s->vel.y + _ctx->noise(vel_noise)),
-                                            float(s->vel.z + _ctx->noise(vel_noise)));
+        const V3 p = s->pos + pos_offset, v = s->vel + vel_offset;
+        _data.latitude_deg = HOME_LAT + (p.x + _ctx->noise(pos_noise)) / R / d2r;
+        _data.longitude_deg = HOME_LON + (p.y + _ctx->noise(pos_noise)) / (R * std::cos(HOME_LAT * d2r)) / d2r;
+        _data.altitude_msl_m = float(120.0 - p.z);
+        _data.velocity_ned = math::Vector3f(float(v.x + _ctx->noise(vel_noise)),
+                                            float(v.y + _ctx->noise(vel_noise)),
+                                            float(v.z + _ctx->noise(vel_noise)));
         _data.has_velocity_ned = true;
         _data.speed_m_s = std::sqrt(_data.velocity_ned.x * _data.velocity_ned.x +
                                     _data.velocity_ned.y * _data.velocity_ned.y);

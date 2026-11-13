@@ -112,6 +112,7 @@ void UAVVehicle::on_arm() {
     _landed = true;
     _landed_timer_s = 0.0f;
     _last_throttle = 0.0f;
+    _althold_thr_lp = 0.0f;
     const auto& st = get_state();
     _target_altitude_m = st.altitude_valid ? st.altitude_m : 0.0f;
 }
@@ -234,12 +235,25 @@ void UAVVehicle::update_controller(float dt) {
         run_attitude(target_roll, target_pitch, target_yaw_rate, dt, integrate);
         _demands.throttle = run_climb_rate(desired_climb, dt, integrate);
         _last_throttle = _demands.throttle;
+        if (!_landed) {
+            const auto& e = state.euler_rad;
+            const float level = _demands.throttle * std::max(std::cos(e.x) * std::cos(e.y), 0.7f);
+            _althold_thr_lp = _althold_thr_lp <= 0.0f ? level : _althold_thr_lp + (level - _althold_thr_lp) * (dt / (1.0f + dt));
+        }
         update_land_detector(desired_climb, dt);
         return;
     }
 
     // STABILIZE (or ALT_HOLD without an altitude estimate): pilot sets collective.
-    const float thr_in = std::clamp(_user_input.throttle, 0.0f, 1.0f);
+    float thr_in = std::clamp(_user_input.throttle, 0.0f, 1.0f);
+    if (_mode == UAVFlightMode::ALT_HOLD) {
+        // Altitude estimate lost (e.g. the baro died): the pilot is still holding
+        // the stick at mid for "hold", so mid stick must mean "the collective that was
+        // just holding altitude", not 50 % collective (which climbs or sinks away).
+        // Piecewise linear: 0 -> 0, 0.5 -> that collective, 1 -> 1.
+        const float mid = _althold_thr_lp > 0.05f ? std::clamp(_althold_thr_lp, 0.15f, 0.85f) : _hover_throttle;
+        thr_in = thr_in <= 0.5f ? thr_in * 2.0f * mid : mid + (thr_in - 0.5f) * 2.0f * (1.0f - mid);
+    }
     if (thr_in < THROTTLE_GROUND) {
         // Throttle at zero = sitting on the ground: no torque demands (the mixer
         // would otherwise lift motors to make room for them) and no windup.

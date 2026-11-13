@@ -30,6 +30,8 @@ class DroneCANNode;
 class SensorManager {
 public:
     static constexpr uint32_t IMU_TIMEOUT_MS = 50;
+    /** An IMU with no new sample for this long is left out of the gyro consistency check. */
+    static constexpr uint32_t IMU_STALE_MS = 10;
     static constexpr uint32_t BARO_TIMEOUT_MS = 500;
     static constexpr uint32_t COMPASS_TIMEOUT_MS = 500;
     static constexpr uint32_t GPS_TIMEOUT_MS = 1500;
@@ -123,7 +125,7 @@ private:
     Monitor* monitor_for(const Sensor* s);
     const Monitor* monitor_for(const Sensor* s) const;
     void evaluate(Monitor& m, uint32_t now_ms);
-    void update_consistency();
+    void update_consistency(uint32_t now_ms);
     void check_health_and_failover();
     void notify_event(const char* name, SensorHealth health);
     template <typename T> void select_primary(T*& active, SensorType type);

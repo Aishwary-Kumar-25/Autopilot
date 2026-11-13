@@ -28,6 +28,7 @@ public:
 
     /** Heading-rate damping gain (steering per rad/s of yaw rate). */
     static constexpr float HEADING_KD = 0.08f;
+    static constexpr float STEER_DEADBAND = 0.05f; // yaw stick beyond this steers directly in HEADING/SPEED_HOLD
 
 protected:
     /** For vehicles that reuse the rover controller (the boat). */

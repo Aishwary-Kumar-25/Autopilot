@@ -154,7 +154,7 @@ void SensorManager::evaluate(Monitor& m, uint32_t now_ms) {
     }
 }
 
-void SensorManager::update_consistency() {
+void SensorManager::update_consistency(uint32_t now_ms) {
     // Nearest-neighbour gyro disagreement: with 3 IMUs one bad unit is far from
     // both others, while each good one has a close neighbour.
     // Runs every loop: fixed-size array, no heap allocation (was a std::vector).
@@ -162,8 +162,17 @@ void SensorManager::update_consistency() {
     Monitor* imus[MAX_IMUS];
     size_t n = 0;
     for (auto& m : _monitors) {
-        if (n < MAX_IMUS && m.sensor->type() == SensorType::IMU && m.verdict != SensorHealth::FAILED &&
-            m.sensor->health() == SensorHealth::HEALTHY) {
+        // A unit whose reading is NaN/inf right now is left out: compared against it, every
+        // GOOD IMU would look inconsistent (NaN distance) and get marked DEGRADED in the
+        // same tick, leaving no usable IMU and making the failsafe cut the motors in flight.
+        // The same goes for a unit that stopped sending: its last (frozen) reading differs from
+        // the live ones as soon as the vehicle moves, so before its timeout trips the good IMU
+        // would be marked DEGRADED and the failover would find no usable IMU (seen in Gazebo).
+        if (m.sensor->type() != SensorType::IMU) continue;
+        const bool fresh = m.sensor->sample_count() != m.last_sample_count;
+        const bool stale = !fresh && m.seen_sample && now_ms - m.last_sample_ms > IMU_STALE_MS;
+        if (n < MAX_IMUS && !stale && m.verdict != SensorHealth::FAILED &&
+            m.sensor->health() == SensorHealth::HEALTHY && finite3(static_cast<IMUSensor*>(m.sensor)->get_gyro())) {
             imus[n++] = &m;
         }
     }
@@ -288,7 +297,7 @@ void SensorManager::update() {
     }
 
     const uint32_t now = (_hal && _hal->get_time()) ? _hal->get_time()->millis() : 0;
-    update_consistency();
+    update_consistency(now);
     for (auto& m : _monitors) evaluate(m, now);
     check_health_and_failover();
 }

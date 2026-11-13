@@ -175,6 +175,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_sitl_drag_bias PRIVATE autopilot_core pthread)
     add_test(NAME test_sitl_drag_bias COMMAND test_sitl_drag_bias)
 
+    # Flight-code bugs found by the ROS 2 simulator scenarios (ros2/autopilot_sim)
+    add_executable(test_sim_found_bugs tests/test_sim_found_bugs.cpp)
+    target_link_libraries(test_sim_found_bugs PRIVATE autopilot_core pthread)
+    add_test(NAME test_sim_found_bugs COMMAND test_sim_found_bugs)
+
     # MAVLink codec (golden frames from pymavlink) + GCS link behaviour
     add_executable(test_mavlink tests/test_mavlink.cpp)
     target_link_libraries(test_mavlink PRIVATE autopilot_core pthread)

@@ -67,8 +67,16 @@ void UGVVehicle::update_controller(float dt) {
         while (heading_err > static_cast<float>(M_PI)) heading_err -= 2.0f * static_cast<float>(M_PI);
         while (heading_err < -static_cast<float>(M_PI)) heading_err += 2.0f * static_cast<float>(M_PI);
 
-        const float steer = _heading_pid.update(heading_err, 0.0f, dt) - HEADING_KD * state.angular_velocity.z;
-        _demands.yaw = std::clamp(steer, -1.0f, 1.0f);
+        if (std::fabs(_user_input.yaw) > STEER_DEADBAND) {
+            // The pilot is steering: the stick wins, and the heading reached when
+            // it is released becomes the new heading to hold.
+            _demands.yaw = std::clamp(_user_input.yaw, -1.0f, 1.0f);
+            _target_heading_rad = state.heading_rad;
+            _heading_pid.reset();
+        } else {
+            const float steer = _heading_pid.update(heading_err, 0.0f, dt) - HEADING_KD * state.angular_velocity.z;
+            _demands.yaw = std::clamp(steer, -1.0f, 1.0f);
+        }
     }
 
     // Speed hold
