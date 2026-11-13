@@ -1,0 +1,20 @@
+name: quad_compass_interference
+description: A strong magnetic disturbance (power cable, steel roof) hits the compass. Roll and pitch must stay right.
+vehicle: quad
+mode: alt_hold
+duration: 30
+vars:
+  fault_t: [10, 15]
+  bx: [-0.3, 0.3]
+  by: [-0.3, 0.3]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: "mag_interference {bx} {by} 0"}
+checks:
+  - {check: tilt_error_below, deg: 6}
+  - {check: alt_between, from: 8, to: 30, min: 2.0, max: 9}
+  - {check: max_tilt_below, deg: 25}
+  - {check: failsafe, action: NONE}

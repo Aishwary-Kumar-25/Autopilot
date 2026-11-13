@@ -456,3 +456,31 @@ assumes the rotor plane is flat (no tilted motors) and is not done for ROV
 thrusters. A lost propeller makes an ESC report HIGHER RPM; only the lost-thrust
 rule catches that. Thresholds (`alpha_min` 5 rad/s²) were tuned on the simulated
 frames; check them against logs of real flights.
+
+## ROS 2 simulator, scenarios and datasets (testing without hardware)
+
+There is no flight hardware yet, so testing moved into simulation. Full guide:
+[ROS2_SIMULATOR.md](ROS2_SIMULATOR.md).
+
+- **Simulator bridge in `autopilot_sitl`** (`sim/sim_bridge.*`, `--bridge PORT`):
+  JSON telemetry (true state, firmware estimate, raw sensors, PWM, failsafe,
+  active faults) and text commands with `at <t>` scheduling in simulated time:
+  sensor faults (dropout, stuck, NaN, offsets, spoofing, interference, noise),
+  motor health, wind, water current, mass, RC loss, sticks, arm, mode, vehicle.
+  `--speedup` runs faster than real time and `--seed` makes runs repeatable.
+- **External physics** (`--physics json`): the ArduPilot JSON SITL protocol,
+  so the firmware flies Gazebo Harmonic through the ardupilot_gazebo plugin.
+  `sim/external_body.hpp`, `sim/json_physics.hpp`.
+- **Scenario engine and datasets** (`ros2/autopilot_sim`, works without ROS):
+  15 YAML scenarios with PASS/FAIL checks; randomized repeat runs write labelled
+  CSV + JSON for data augmentation.
+- **ROS 2 Jazzy package**: odometry (truth and estimate), IMU, GPS, baro, mag,
+  battery, PWM, TF, diagnostics, `/clock`, RViz config, rosbag recording, command
+  topic, joystick input and an arm service. Launch files for the built-in physics
+  and for Gazebo.
+- **Firmware bugs the scenarios found, fixed** (`tests/test_sim_found_bugs.cpp`):
+  a NaN IMU and a stale (dropped-out) IMU could each make the gyro consistency
+  check mark the good IMU DEGRADED, so the failsafe cut the motors in flight;
+  ALT_HOLD climbed away when the baro died; rover HEADING_HOLD ignored steering.
+- **Still open**: GPS velocity spoofing tilts the estimate 10-15° (no innovation
+  gate yet); baro loss needs a GPS-altitude fallback in the estimator.

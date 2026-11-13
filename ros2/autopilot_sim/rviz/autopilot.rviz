@@ -1,0 +1,78 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Time
+    Name: Time
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 160; 160; 164
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.6
+      Show Names: true
+      Show Arrows: false
+      Show Axes: true
+    - Class: rviz_default_plugins/Marker
+      Name: Vehicle
+      Enabled: true
+      Topic:
+        Value: /autopilot/vehicle_marker
+    - Class: rviz_default_plugins/Path
+      Name: Truth path
+      Enabled: true
+      Color: 25; 160; 255
+      Line Width: 0.03
+      Line Style: Billboards
+      Topic:
+        Value: /autopilot/truth/path
+    - Class: rviz_default_plugins/Path
+      Name: Estimate path
+      Enabled: true
+      Color: 255; 170; 0
+      Line Width: 0.02
+      Line Style: Billboards
+      Topic:
+        Value: /autopilot/estimate/path
+    - Class: rviz_default_plugins/Odometry
+      Name: Truth odometry
+      Enabled: false
+      Topic:
+        Value: /autopilot/truth/odom
+      Keep: 1
+    - Class: rviz_default_plugins/Odometry
+      Name: Estimate odometry
+      Enabled: false
+      Topic:
+        Value: /autopilot/estimate/odom
+      Keep: 1
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/Measure
+  Views:
+    Current:
+      Class: rviz_default_plugins/ThirdPersonFollower
+      Name: Follow vehicle
+      Target Frame: base_link
+      Distance: 8
+      Pitch: 0.5
+      Yaw: 3.9
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+Window Geometry:
+  Width: 1200
+  Height: 800

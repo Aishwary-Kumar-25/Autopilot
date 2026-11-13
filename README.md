@@ -53,6 +53,7 @@ Autopilot_eclub/
 │   ├── SENSOR_PLUG_AND_PLAY.md # PnP sensor pinouts, DroneCAN, & hot-swap
 │   ├── HARDWARE_STM32_HAL.md   # STM32 class pinouts, timers, & cross-compile
 │   ├── MAVLINK_QGC.md          # MAVLink 2 link, QGroundControl SITL, parameters
+│   ├── ROS2_SIMULATOR.md       # Test without hardware: scenarios, datasets, ROS 2, Gazebo
 │   └── ACTUATOR_MATRIX_MIXING.md # 2-16 channel matrix mixer & geometry presets
 ├── hal/                        # Hardware Abstraction Layer
 │   ├── hal.hpp                 # Bus, Timer, PWM, & Peripheral interfaces
@@ -145,3 +146,15 @@ See [docs/MAVLINK_QGC.md](docs/MAVLINK_QGC.md).
 The same binary simulates a rover, a boat and a sub as well:
 `./autopilot_sitl --vehicle rover` (or `boat`, `sub`), or switch while it runs by
 setting the `VEHICLE_TYPE` parameter in QGC (0 quad, 1 rover, 2 sub, 3 boat).
+
+### 5. Test without hardware: scenarios, datasets, ROS 2 and Gazebo
+```bash
+pip install pyyaml
+cd ros2/autopilot_sim && python3 -m autopilot_sim.run_scenarios            # 14 scripted tests, ~3 s
+python3 -m autopilot_sim.run_scenarios --runs 50 --jobs 4 --out ~/datasets  # randomized flight data
+```
+Sensor failures, motor failure, GPS loss/spoofing, RC loss, wind, rover, boat and
+ROV scenarios run against the real flight code with PASS/FAIL checks. The ROS 2
+package (`ros2/autopilot_sim`) publishes everything as ROS topics, shows it in
+RViz, records rosbags and can fly the firmware in Gazebo Harmonic. Windows setup
+(WSL2) is included. See [docs/ROS2_SIMULATOR.md](docs/ROS2_SIMULATOR.md).

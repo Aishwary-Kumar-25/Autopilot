@@ -1,0 +1,17 @@
+name: sub_depth_hold
+description: ROV dives to about 2 m in DEPTH_HOLD and holds it; GPS is lost underwater as it would be in reality.
+vehicle: sub
+mode: 2
+duration: 35
+vars:
+  dive_s: [3, 6]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0 0 0}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 -0.7 0 0}
+  - {t: "2 + {dive_s}", cmd: sticks 0 0 0 0 0 0}
+  - {t: 25.0, cmd: sticks 0 0 0 0.8 0 0}
+checks:
+  - {check: depth_between, from: "{dive_s} + 5", to: 25, min: 0.8, max: 6}
+  - {check: tilt_error_below, deg: 6}
+  - {check: failsafe, action: NONE}

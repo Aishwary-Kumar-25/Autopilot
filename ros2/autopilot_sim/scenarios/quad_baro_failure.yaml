@@ -1,0 +1,18 @@
+name: quad_baro_failure
+description: The barometer dies in ALT_HOLD. The quad must not climb away or fall out of the sky.
+vehicle: quad
+mode: alt_hold
+duration: 35
+vars:
+  fault_t: [10, 18]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: fault baro dropout}
+checks:
+  - {check: reached_alt, min: 3, by: 8}
+  - {check: max_tilt_below, deg: 25}
+  - {check: alt_between, from: "{fault_t}", to: 35, max: 10}
+  - {check: touchdown_speed_below, mps: 2.5}

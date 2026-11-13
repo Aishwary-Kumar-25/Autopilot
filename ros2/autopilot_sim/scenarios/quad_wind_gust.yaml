@@ -1,0 +1,21 @@
+name: quad_wind_gust
+description: A 6 m/s gust hits a hovering quad. Estimate and control must hold up.
+vehicle: quad
+mode: alt_hold
+duration: 30
+vars:
+  gust_t: [10, 15]
+  gust_n: [-6, 6]
+  gust_e: [-6, 6]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{gust_t}", cmd: "wind {gust_n} {gust_e} 0"}
+  - {t: "{gust_t} + 5", cmd: wind 0 0 0}
+checks:
+  - {check: tilt_error_below, deg: 6}
+  - {check: alt_between, from: 8, to: 30, min: 1.5, max: 10}
+  - {check: max_tilt_below, deg: 35}
+  - {check: failsafe, action: NONE}

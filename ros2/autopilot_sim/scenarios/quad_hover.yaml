@@ -1,0 +1,31 @@
+name: quad_hover
+description: Baseline. Take off in ALT_HOLD, hover, land on the throttle and disarm. Nothing fails.
+vehicle: quad
+mode: alt_hold
+duration: 40
+vars:
+  wind_n: [-2, 2]          # randomized runs: light wind from any direction
+  wind_e: [-2, 2]
+  accel_noise: [0.05, 0.8] # motor vibration on the accelerometers
+  mass: [1.1, 1.4]         # payload
+setup:
+  - wind {wind_n} {wind_e} 0
+  - accel_noise imu {accel_noise}
+  - mass {mass}
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}     # centred throttle = hold
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}    # climb
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}     # hold
+  - {t: 25.0, cmd: sticks 0 0 0 0.15}   # descend
+  - {t: 36.0, cmd: sticks 0 0 0 0}      # throttle down on the ground
+  - {t: 37.0, cmd: disarm}
+checks:
+  - {check: reached_alt, min: 3, by: 8}
+  - {check: alt_between, from: 9, to: 25, min: 2.5, max: 9}
+  - {check: tilt_error_below, deg: 8}   # randomized runs add heavy vibration
+  - {check: alt_error_below, m: 1.0}
+  - {check: max_tilt_below, deg: 25}
+  - {check: failsafe, action: NONE}
+  - {check: touchdown_speed_below, mps: 2.0}
+  - {check: armed, at: 39, value: false}

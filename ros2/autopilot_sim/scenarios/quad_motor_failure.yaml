@@ -1,0 +1,19 @@
+name: quad_motor_failure
+description: One motor of a plain quad dies in a hover. A quad can't hold yaw on 3 motors - the FC must detect it and land without flipping.
+vehicle: quad
+mode: alt_hold
+duration: 35
+vars:
+  fault_t: [10, 15]
+  motor: {choice: [1, 2, 3, 4]}
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: "motor {motor} 0"}
+checks:
+  - {check: motor_failed, motor: "{motor}", by: "{fault_t} + 1"}
+  - {check: failsafe, action: LAND, reason: motor, from: "{fault_t}"}
+  - {check: max_tilt_below, deg: 45}
+  - {check: touchdown_speed_below, mps: 3.0}

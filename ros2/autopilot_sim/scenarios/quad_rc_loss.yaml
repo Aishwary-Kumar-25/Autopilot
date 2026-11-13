@@ -1,0 +1,18 @@
+name: quad_rc_loss
+description: The radio link drops in a hover. The failsafe must land the quad and disarm it.
+vehicle: quad
+mode: alt_hold
+duration: 40
+vars:
+  fault_t: [10, 15]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: rc off}
+checks:
+  - {check: failsafe, action: LAND, reason: rc_loss, from: "{fault_t}", to: "{fault_t} + 2"}
+  - {check: touchdown_speed_below, mps: 2.0}
+  - {check: disarmed_by, by: 40}
+  - {check: max_tilt_below, deg: 25}

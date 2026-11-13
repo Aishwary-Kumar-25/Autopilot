@@ -1,0 +1,26 @@
+name: quad_gps_spoof
+description: A spoofer drags the GPS velocity by a few m/s while the quad hovers. GPS velocity aids the tilt estimate, so a lying GPS must not tip the quad over.
+known_issue: >-
+  Not fixed yet. The estimator uses GPS velocity for tilt aiding without checking it
+  against the IMU (no innovation gate), so a spoofed velocity pulls roll/pitch off
+  by 10-15 deg. Fix idea: reject GPS velocity whose innovation is too large and
+  flag it (ties in with the GPS spoofing detection work).
+vehicle: quad
+mode: alt_hold
+duration: 35
+vars:
+  fault_t: [10, 15]
+  vn: [2, 4]                 # spoofed velocity error, m/s
+  ve: [-2, 2]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: "gps_vel_offset {vn} {ve} 0"}
+  - {t: "{fault_t}", cmd: "gps_offset 30 -20 0"}
+checks:
+  - {check: tilt_error_below, deg: 8}
+  - {check: max_tilt_below, deg: 25}
+  - {check: alt_between, from: 8, to: 35, min: 2.0, max: 9}
+  - {check: failsafe, action: NONE}

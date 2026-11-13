@@ -1,0 +1,23 @@
+name: rover_drive
+description: Ground rover in HEADING_HOLD drives forward, turns, and stops. GPS is lost halfway.
+vehicle: rover
+mode: 1
+duration: 30
+vars:
+  speed: [0.3, 0.8]
+  gps_t: [12, 18]
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0 0 0}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: "sticks 0 0 0 {speed} {speed} 0"}
+  - {t: 10.0, cmd: "sticks 0 0 0.3 {speed} {speed} 0"}   # steer right...
+  - {t: 12.0, cmd: "sticks 0 0 0 {speed} {speed} 0"}     # ...then hold the new heading
+  - {t: "{gps_t}", cmd: fault gps dropout}
+  - {t: 24.0, cmd: sticks 0 0 0 0 0 0}
+  - {t: 28.0, cmd: disarm}
+checks:
+  - {check: moved, from: 2, to: 10, min_m: 3}
+  - {check: heading_change, from: 9, to: 13, min_deg: 20, direction: right}
+  - {check: heading_change, from: 13.5, to: 24, max_deg: 5}   # HEADING_HOLD keeps the new heading
+  - {check: yaw_error_below, deg: 10}
+  - {check: failsafe, action: NONE}

@@ -1,0 +1,19 @@
+name: hexa_motor_failure
+description: One motor of a hexacopter dies in a hover. The mixer reallocates to the other five and it keeps flying.
+vehicle: quad
+mode: alt_hold
+sitl_args: [--frame, 6]
+duration: 35
+vars:
+  fault_t: [10, 15]
+  motor: {choice: [1, 2, 3, 4, 5, 6]}
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: "motor {motor} 0"}
+checks:
+  - {check: motor_failed, motor: "{motor}", by: "{fault_t} + 1"}
+  - {check: alt_between, from: "{fault_t} + 3", to: 35, min: 1.5, max: 10}
+  - {check: max_tilt_below, deg: 30}

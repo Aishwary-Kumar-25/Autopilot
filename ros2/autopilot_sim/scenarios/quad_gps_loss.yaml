@@ -1,0 +1,23 @@
+name: quad_gps_loss
+description: GPS receiver dies in a hover. The quad must keep its attitude and altitude on IMU + baro.
+vehicle: quad
+mode: alt_hold
+duration: 40
+vars:
+  fault_t: [10, 20]
+  wind_n: [-3, 3]
+setup:
+  - wind {wind_n} 0 0
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: fault gps dropout}
+  - {t: 34.0, cmd: sticks 0 0 0 0.15}
+checks:
+  - {check: reached_alt, min: 3, by: 8}
+  - {check: alt_between, from: "{fault_t}", to: 34, min: 2.0, max: 9}
+  - {check: tilt_error_below, deg: 6}
+  - {check: max_tilt_below, deg: 25}
+  - {check: failsafe, action: NONE}

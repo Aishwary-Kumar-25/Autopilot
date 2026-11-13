@@ -1,0 +1,19 @@
+name: boat_current
+description: Surface boat crosses a water current. The heading estimate must stay good while course and heading differ.
+vehicle: boat
+mode: 1
+duration: 30
+vars:
+  cur_n: [-0.8, 0.8]
+  cur_e: [-0.8, 0.8]
+setup:
+  - "current {cur_n} {cur_e}"
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0 0 0}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.6 0.6 0}
+  - {t: 26.0, cmd: sticks 0 0 0 0 0 0}
+checks:
+  - {check: moved, from: 2, to: 26, min_m: 8}
+  - {check: yaw_error_below, deg: 10}
+  - {check: failsafe, action: NONE}

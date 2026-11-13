@@ -1,0 +1,23 @@
+name: vehicle_switch
+description: One firmware, two vehicles. Start as a quad, hover, land, switch to rover at runtime and drive.
+vehicle: quad
+mode: alt_hold
+duration: 45
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 5.0, cmd: sticks 0 0 0 0.5}
+  - {t: 10.0, cmd: sticks 0 0 0 0.1}
+  - {t: 25.0, cmd: disarm}
+  - {t: 26.0, cmd: vehicle rover}
+  - {t: 26.5, cmd: mode 1}
+  - {t: 27.0, cmd: sticks 0 0 0 0 0 0}
+  - {t: 28.0, cmd: arm}
+  - {t: 29.0, cmd: sticks 0 0 0 0.6 0.6 0}
+  - {t: 40.0, cmd: sticks 0 0 0 0 0 0}
+checks:
+  - {check: reached_alt, min: 2, by: 8}
+  - {check: disarmed_by, by: 26}
+  - {check: moved, from: 29, to: 40, min_m: 4}
+  - {check: failsafe, action: NONE}

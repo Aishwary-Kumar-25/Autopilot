@@ -1,0 +1,20 @@
+name: quad_imu_failover
+description: The primary IMU stops answering in flight. The sensor manager must switch to the second IMU and the quad keeps flying.
+vehicle: quad
+mode: alt_hold
+duration: 30
+vars:
+  fault_t: [10, 18]
+  kind: {choice: [dropout, stuck, nan]}
+events:
+  - {t: 1.0, cmd: sticks 0 0 0 0.5}
+  - {t: 1.5, cmd: arm}
+  - {t: 2.0, cmd: sticks 0 0 0 0.85}
+  - {t: 6.0, cmd: sticks 0 0 0 0.5}
+  - {t: "{fault_t}", cmd: "fault imu0 {kind}"}
+checks:
+  - {check: active_sensor, sensor: imu, name: SIM_IMU1, from: "{fault_t}", by: "{fault_t} + 2"}
+  - {check: alt_between, from: "{fault_t}", to: 30, min: 2.0, max: 9}
+  - {check: max_tilt_below, deg: 25}
+  - {check: tilt_error_below, deg: 8}
+  - {check: failsafe, action: NONE}

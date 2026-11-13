@@ -19,3 +19,7 @@ compile_commands.json
 # SITL saved settings
 *.eeprom
 *.eeprom.tmp
+
+# Python
+__pycache__/
+*.egg-info/
