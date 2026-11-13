@@ -11,6 +11,7 @@
  * SensorManager + SensorFusion) keep running across the switch.
  */
 #include "hal/hal.hpp"
+#include "sim/external_body.hpp"
 #include "sim/quad_sim.hpp"
 #include "sim/sub_sim.hpp"
 #include "sim/surface_sim.hpp"
@@ -25,7 +26,12 @@ class SimWorld {
 public:
     SimContext ctx;
 
-    SimWorld(vehicles::VehicleManager& vm, hal::Time* time) : _vm(vm) {
+    /**
+     * external = true: the physics runs in another program (autopilot_sitl
+     * --physics json, e.g. Gazebo); every vehicle type gets an ExternalBody whose
+     * state that program sets each step.
+     */
+    SimWorld(vehicles::VehicleManager& vm, hal::Time* time, bool external = false) : _vm(vm), _external(external) {
         ctx.time = time;
         sync();
     }
@@ -33,6 +39,7 @@ public:
     SimBody& body() { return *_body; }
     const SimBody& body() const { return *_body; }
     template <class T> T* as() { return dynamic_cast<T*>(_body.get()); }
+    bool external() const { return _external; }
 
     /** Number of body swaps so far (0 = still the initial body). */
     int swaps() const { return _swaps; }
@@ -52,7 +59,7 @@ public:
             yaw = _body->yaw();
             ++_swaps;
         }
-        _body = make_body(type, frame);
+        _body = _external ? std::unique_ptr<SimBody>(std::make_unique<ExternalBody>()) : make_body(type, frame);
         if (auto* quad = dynamic_cast<QuadModel*>(_body.get())) {
             // Hexa, octa, ...: take the motor layout from the firmware's own mixer.
             auto* uav = dynamic_cast<vehicles::UAVVehicle*>(_vm.get_active_vehicle());
@@ -91,6 +98,7 @@ public:
 
 private:
     vehicles::VehicleManager& _vm;
+    bool _external{false};
     std::unique_ptr<SimBody> _body;
     vehicles::VehicleType _type{vehicles::VehicleType::UAV_MULTICOPTER};
     int _frame{0};

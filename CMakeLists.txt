@@ -113,7 +113,7 @@ target_link_libraries(autopilot_app PRIVATE autopilot_core pthread)
 # Real-time SITL: simulated quad + the full flight stack, talking MAVLink over
 # UDP to QGroundControl (127.0.0.1:14550). See docs/MAVLINK_QGC.md.
 if(NOT STM32_TARGET)
-    add_executable(autopilot_sitl sim/sitl_main.cpp)
+    add_executable(autopilot_sitl sim/sitl_main.cpp sim/sim_bridge.cpp)
     target_link_libraries(autopilot_sitl PRIVATE autopilot_core pthread)
 endif()
 
